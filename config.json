@@ -1,0 +1,10 @@
+{
+  "student": {
+    "name": "悦琳",
+    "grade": "小学三升四",
+    "level": "基础薄弱,鼓励优先"
+  },
+  "pin": "1234",
+  "mock": true,
+  "session_minutes": 25
+}

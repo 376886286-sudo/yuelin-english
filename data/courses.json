@@ -1,0 +1,397 @@
+[
+  {
+    "id": "7a91ec578b",
+    "created": "2026-08-06 12:00",
+    "preview": false,
+    "unit": 1,
+    "title_zh": "见面、问候与心情",
+    "title_en": "Meet, Feel and Find",
+    "duration": "完成一次25至28分钟的口语与跟读练习。全程只做三个短环节：见面名片、心情侦探、寻物小队。三段的词汇、任务和记录必须分开。",
+    "abilities": [
+      "自我介绍",
+      "How do you feel?",
+      "What's the matter?",
+      "Where is/are...?",
+      "单复数与方位介词"
+    ],
+    "rules": [
+      "悦琳理解力正常，拼读速度较慢。每次提问后等待5至7秒，再给首音或关键词。",
+      "每轮最多说两句简短英语，教师约说35%，悦琳约说65%。不使用中文谐音。",
+      "连续两次未完成时，示范一次并让她完整跟读，不反复施压。",
+      "每个短环节结束时，先说明“这一段完成”，记录A/B/C/D后再进入下一段。未完成内容留到下次。"
+    ],
+    "segments": [
+      {
+        "code": "MEET",
+        "name_zh": "见面名片",
+        "minutes": 6,
+        "task": "拿一张英文名片，与悦琳完成两轮交换姓名的对话。",
+        "words": [
+          "hello",
+          "name",
+          "friend"
+        ],
+        "phonics": [
+          "听清 hello 的 /h/、name 的 /n/、friend 的 /f/。"
+        ],
+        "patterns": [
+          "What's your name?",
+          "My name is Mike.",
+          "Nice to meet you.",
+          "Nice to meet you, too."
+        ],
+        "dialogue": [
+          [
+            "A",
+            "Hello! I'm Baobao. What's your name?"
+          ],
+          [
+            "B",
+            "My name is Mike."
+          ],
+          [
+            "A",
+            "Nice to meet you."
+          ],
+          [
+            "B",
+            "Nice to meet you, too."
+          ]
+        ],
+        "variation": "第二轮换成悦琳和教师的真实姓名，由悦琳先开口。",
+        "pass_rule": "能说出自己的名字，并完成一次问名字和回应。",
+        "transition": "Great. We know each other now. Let's check our feelings."
+      },
+      {
+        "code": "FEEL",
+        "name_zh": "心情侦探",
+        "minutes": 7,
+        "task": "抽一张心情卡，说出心情，再完成一次询问原因和安慰。",
+        "words": [
+          "happy",
+          "worried",
+          "excited",
+          "sad",
+          "angry",
+          "better",
+          "look for",
+          "calm down",
+          "take a walk"
+        ],
+        "phonics": [
+          "比较 happy 和 sad 中的短元音 /æ/。"
+        ],
+        "patterns": [
+          "How do you feel today?",
+          "I feel worried.",
+          "What's the matter?",
+          "Don't worry. Let's look for it together."
+        ],
+        "dialogue": [
+          [
+            "A",
+            "How do you feel today?"
+          ],
+          [
+            "B",
+            "I feel worried."
+          ],
+          [
+            "A",
+            "What's the matter?"
+          ],
+          [
+            "B",
+            "I can't find my cap."
+          ],
+          [
+            "A",
+            "Don't worry. Let's look for it together."
+          ]
+        ],
+        "variation": "把 worried 换成 happy, excited, sad 或 angry，只练其中两个。回答 angry 时可回应：Please don't be angry. Let's take a walk.",
+        "pass_rule": "能说出一种心情，回答 What's the matter?，并听懂一句安慰或建议。",
+        "transition": "Now we know the problem. Let's find the missing things."
+      },
+      {
+        "code": "FIND",
+        "name_zh": "寻物小队",
+        "minutes": 8,
+        "task": "把围巾、帽子、书包或课本放在不同位置，完成两轮寻物问答。",
+        "words": [
+          "scarf",
+          "cap",
+          "schoolbag",
+          "exercise books",
+          "box",
+          "bed",
+          "desk",
+          "in",
+          "on",
+          "under",
+          "next to"
+        ],
+        "phonics": [
+          "读清 cap 和 bag 中的短元音 /æ/",
+          "exercise books 使用复数。"
+        ],
+        "patterns": [
+          "Where is your red scarf?",
+          "It's in the box.",
+          "Where are my exercise books?",
+          "They're on the desk."
+        ],
+        "dialogue": [
+          [
+            "A",
+            "Where is your red scarf?"
+          ],
+          [
+            "B",
+            "It's in the box."
+          ],
+          [
+            "A",
+            "Is this your cap?"
+          ],
+          [
+            "B",
+            "Yes, it is."
+          ],
+          [
+            "A",
+            "Where are my exercise books?"
+          ],
+          [
+            "B",
+            "They're on the desk."
+          ]
+        ],
+        "variation": "收尾时一起把物品收好，说：Let's put our things in order.",
+        "pass_rule": "能分别使用 Where is 和 Where are，并用一个位置词回答。",
+        "transition": "We found the things and put them in order."
+      }
+    ],
+    "closing_check": [
+      "不重新教新内容。分别从三个短环节中抽一项：",
+      "1. MEET：悦琳先开口问名字。",
+      "2. FEEL：看一张心情卡说 I feel ...",
+      "3. FIND：看一个物品位置完成 Where is/are ...?"
+    ],
+    "record_scheme": {
+      "A": "独立完成。",
+      "B": "首音或关键词提示后完成。",
+      "C": "示范或同步跟读后完成。",
+      "D": "本次未完成或暂时跳过。"
+    },
+    "ending_output": [
+      "1. MEET、FEEL、FIND三段各自的A/B/C/D结果。",
+      "2. 每段记录一句悦琳真实说出的英语，不只写“已完成”。",
+      "3. 只选2至4个薄弱项放入下次，并给出第1天、第3天、第7天的短回测建议。",
+      "4. 结尾说：You took your time and kept speaking. That is real progress."
+    ],
+    "source": "Unit01_见面、问候与心情_AI带读发送稿.txt",
+    "source_type": "txt"
+  },
+  {
+    "id": "db4c780895",
+    "created": "2026-08-06 15:53",
+    "preview": false,
+    "unit": 2,
+    "title_zh": "数字、年龄与礼貌借用",
+    "title_en": "Count, Ask and Borrow",
+    "duration": "用数字完成数量与年龄问答，再在真实学习用品情境中练习礼貌请求。重点区分名词单复数，并把 please、thank you 和 you're welcome 说完整。",
+    "abilities": [
+      "数字1至20",
+      "How many...?",
+      "How old...?",
+      "I am/I'm",
+      "May I...?",
+      "名词复数"
+    ],
+    "rules": [
+      "悦琳理解力正常，拼读速度较慢。每次提问后等待5至7秒，再给首音或关键词。",
+      "每轮最多说两句简短英语，教师约说35%，悦琳约说65%。不使用中文谐音。",
+      "连续两次未完成时，示范一次并让她完整跟读，不反复施压。",
+      "每个短环节结束时，先说明“这一段完成”，记录A/B/C/D后再进入下一段。未完成内容留到下次。"
+    ],
+    "segments": [
+      {
+        "code": "COUNT",
+        "name_zh": "数字侦察",
+        "minutes": 6,
+        "task": "用铅笔、书或积木做两轮点数，先数实物，再完整回答数量。",
+        "words": [
+          "one to twenty",
+          "pencil",
+          "ruler",
+          "book",
+          "bag",
+          "pencils",
+          "rulers",
+          "books",
+          "bags"
+        ],
+        "phonics": [
+          "读清 six 结尾的 /ks/ 和 twelve 结尾的 /v/",
+          "注意 pencils、books 的复数词尾。"
+        ],
+        "patterns": [
+          "How many pencils do you have?",
+          "I have twelve pencils.",
+          "How many books are there?",
+          "There are ten books."
+        ],
+        "dialogue": [
+          [
+            "A",
+            "How many pencils do you have?"
+          ],
+          [
+            "B",
+            "I have twelve pencils."
+          ],
+          [
+            "A",
+            "How many books are there on the desk?"
+          ],
+          [
+            "B",
+            "There are ten books."
+          ]
+        ],
+        "variation": "第一轮只练1至10，第二轮再练11至20。回答必须带物品名，不只说数字。",
+        "pass_rule": "能正确数到20，并用 I have... 或 There are... 回答一次。",
+        "transition": "Good counting. Now let's do an age survey."
+      },
+      {
+        "code": "AGE",
+        "name_zh": "年龄小调查",
+        "minutes": 7,
+        "task": "用姓名卡采访两个人的年龄，并把答案复述出来。",
+        "words": [
+          "age",
+          "year",
+          "old",
+          "nine",
+          "ten",
+          "eleven",
+          "twelve"
+        ],
+        "phonics": [
+          "比较 nine 的长元音 /aɪ/ 和 six 的短元音 /ɪ/。"
+        ],
+        "patterns": [
+          "How old are you?",
+          "I'm nine years old.",
+          "Are you ten?",
+          "Yes, I am. / No, I'm not."
+        ],
+        "dialogue": [
+          [
+            "A",
+            "What's your name?"
+          ],
+          [
+            "B",
+            "My name is Yue Lin."
+          ],
+          [
+            "A",
+            "How old are you?"
+          ],
+          [
+            "B",
+            "I'm nine years old."
+          ],
+          [
+            "A",
+            "Are you ten?"
+          ],
+          [
+            "B",
+            "No, I'm not."
+          ]
+        ],
+        "variation": "用9、10、11中的两个年龄替换练习；年龄用 be 动词表达，不按中文直译为“拥有多少岁”。",
+        "pass_rule": "能问一次年龄，并用 I'm ... years old. 完整回答。",
+        "transition": "We know the numbers and ages. Let's ask politely for something we need."
+      },
+      {
+        "code": "BORROW",
+        "name_zh": "礼貌借用",
+        "minutes": 8,
+        "task": "设置一张学习用品借用台，完成同意借用和暂时不能借用两种回应。",
+        "words": [
+          "eraser",
+          "ruler",
+          "pencil",
+          "coloured pencil",
+          "ping-pong bat",
+          "excuse me",
+          "please",
+          "sure"
+        ],
+        "phonics": [
+          "读清 please 的 /pl/ 和 ruler 的 /r/",
+          "you're 是 you are 的缩写。"
+        ],
+        "patterns": [
+          "Can you help me, please?",
+          "May I use your ruler?",
+          "Sure. Here you are.",
+          "Sorry, I need it now."
+        ],
+        "dialogue": [
+          [
+            "A",
+            "Excuse me. Can you help me, please?"
+          ],
+          [
+            "B",
+            "Sure. What can I do for you?"
+          ],
+          [
+            "A",
+            "May I use your ruler?"
+          ],
+          [
+            "B",
+            "Sure. Here you are."
+          ],
+          [
+            "A",
+            "Thank you."
+          ],
+          [
+            "B",
+            "You're welcome."
+          ]
+        ],
+        "variation": "换成 eraser 或 coloured pencil 再练一轮；第二轮可回答 Sorry, I need it now. 并保持礼貌。",
+        "pass_rule": "能用 Excuse me 和 May I...? 发出一次完整请求，并完成感谢与回应。",
+        "transition": "Thank you for asking in a polite way."
+      }
+    ],
+    "closing_check": [
+      "不重新教新内容。分别从三个短环节中抽一项：",
+      "1. COUNT：数一组11至20的物品并说完整句。",
+      "2. AGE：完成 How old are you? 的问答。",
+      "3. BORROW：用 May I...? 礼貌借用一件物品。"
+    ],
+    "record_scheme": {
+      "A": "独立完成。",
+      "B": "首音或关键词提示后完成。",
+      "C": "示范或同步跟读后完成。",
+      "D": "本次未完成或暂时跳过。"
+    },
+    "ending_output": [
+      "1. COUNT、AGE、BORROW三段各自的A/B/C/D结果。",
+      "2. 每段记录一句悦琳真实说出的英语，不只写“已完成”。",
+      "3. 只选2至4个薄弱项放入下次，并给出第1天、第3天、第7天的短回测建议。",
+      "4. 结尾说：You took your time and kept speaking. That is real progress."
+    ],
+    "source": "Unit02_数字、年龄与礼貌借用_AI带读发送稿.txt",
+    "source_type": "txt"
+  }
+]
