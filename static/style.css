@@ -563,3 +563,167 @@ button:focus-visible,
 }
 .btn-primary:focus-visible { box-shadow: var(--focus-ring), var(--shadow-accent); }
 input:focus-visible { box-shadow: var(--focus-ring); border-color: var(--accent); }
+
+/* ============================================================
+   会话页(stage 3)优化
+   ============================================================ */
+.session-view { display: flex; flex-direction: column; height: 100vh; }
+
+/* 当前环节横幅 */
+.seg-hero {
+  display: flex; align-items: center; gap: var(--s-2);
+  padding: var(--s-3);
+  background: linear-gradient(135deg, rgba(61,185,255,0.10), rgba(138,92,255,0.10));
+  border-bottom: 0.5px solid var(--border);
+  flex-shrink: 0;
+}
+.seg-hero .seg-icon {
+  width: 52px; height: 52px; border-radius: 16px;
+  background: var(--accent-grad); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 26px; box-shadow: var(--shadow-accent);
+  flex-shrink: 0;
+  animation: float 3s ease-in-out infinite;
+}
+.seg-hero .seg-name { font-size: 18px; font-weight: 700; letter-spacing: -0.3px; color: var(--text); }
+.seg-hero .seg-meta { font-size: var(--f-caption); color: var(--text-2); margin-top: 2px; }
+.seg-hero .seg-info { flex: 1; min-width: 0; }
+
+/* 录音舞台(speak-stage) */
+.session-view .content { padding-bottom: 280px; }   /* 为舞台留位 */
+
+.speak-stage {
+  position: fixed; left: 0; right: 0; bottom: 0;
+  padding: var(--s-3) var(--s-3) calc(var(--s-3) + var(--safe-bottom));
+  background: rgba(255,255,255,0.92);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  border-top: 0.5px solid var(--border);
+  display: flex; flex-direction: column; align-items: center; gap: var(--s-2);
+  z-index: 10;
+}
+.stage-mic { position: relative; width: 120px; height: 120px; display: flex; align-items: center; justify-content: center; }
+.big-mic-btn {
+  width: 120px; height: 120px; border-radius: 50%; border: none;
+  background: var(--accent-grad); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; box-shadow: var(--shadow-accent);
+  transition: transform 0.12s var(--ease), background 0.2s, box-shadow 0.2s;
+  position: relative; z-index: 2;
+  font-family: inherit;
+}
+.big-mic-btn:active { transform: scale(0.94); }
+.big-mic-icon { font-size: 56px; line-height: 1; }
+.stage-pulse {
+  position: absolute; inset: 0; border-radius: 50%;
+  background: var(--accent); opacity: 0;
+  pointer-events: none; z-index: 1;
+}
+.speak-stage[data-stage="listening"] .big-mic-btn {
+  background: var(--weak); box-shadow: 0 8px 24px rgba(229,72,77,0.4);
+}
+.speak-stage[data-stage="listening"] .stage-pulse {
+  animation: ringPulse 1.4s ease-out infinite;
+}
+.speak-stage[data-stage="thinking"] .big-mic-btn {
+  background: var(--surface-3); color: var(--text-2); box-shadow: var(--shadow-sm);
+}
+.speak-stage[data-stage="thinking"] .big-mic-icon { animation: spin 2s linear infinite; display: inline-block; }
+.speak-stage[data-stage="done"] .big-mic-btn {
+  background: var(--good); box-shadow: 0 8px 24px rgba(47,168,79,0.4);
+}
+@keyframes ringPulse {
+  0% { transform: scale(1); opacity: 0.5; }
+  100% { transform: scale(2); opacity: 0; }
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.stage-text { font-size: 19px; font-weight: 700; letter-spacing: -0.3px; color: var(--text); }
+.stage-tip { font-size: var(--f-caption); color: var(--text-2); text-align: center; }
+.stage-actions { display: flex; gap: var(--s-1); }
+.speak-stage[data-stage="idle"] .stage-actions { display: none; }
+.speak-stage[data-stage="done"] .stage-actions { display: none; }
+
+/* AI 气泡翻译 */
+.bubble-translate {
+  display: inline-flex; align-items: center; gap: 4px;
+  margin-top: 8px; padding: 4px 10px;
+  background: var(--accent-bg); border: none;
+  color: var(--accent); border-radius: 980px;
+  font-size: var(--f-caption); font-weight: 500;
+  cursor: pointer; font-family: inherit;
+  transition: background 0.15s;
+}
+.bubble-translate:hover { background: #DCE7FE; }
+.bubble-translate .tr-icon { font-size: 13px; }
+.bubble-zh {
+  margin-top: 8px; padding: 8px 12px;
+  background: var(--accent-bg); border-radius: 12px;
+  font-size: 14px; color: var(--text-2);
+}
+
+/* 鼓励反馈 */
+.encourage-msg {
+  align-self: center;
+  background: linear-gradient(135deg, #FFF4E0, #FFF9E6);
+  border: 1px solid #F0D89C;
+  border-radius: 980px;
+  padding: 8px 18px; font-size: 15px; font-weight: 600;
+  color: var(--fair);
+  box-shadow: var(--shadow-sm);
+  animation: fadeIn 0.3s var(--ease);
+}
+
+/* 评级卡片 */
+.grade-card {
+  align-self: center; max-width: 480px;
+  background: var(--surface); border-radius: var(--radius-xl);
+  border: 0.5px solid var(--border); box-shadow: var(--shadow-md);
+  padding: var(--s-3) var(--s-3); margin: 4px 0;
+  display: flex; flex-direction: column; gap: var(--s-2);
+  animation: fadeIn 0.4s var(--ease);
+  width: 100%;
+}
+.grade-card .grade-head { display: flex; align-items: center; gap: var(--s-2); }
+.grade-card .grade-icon {
+  width: 56px; height: 56px; border-radius: 18px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 30px; font-weight: 700; color: #fff;
+  flex-shrink: 0;
+  box-shadow: var(--shadow-sm);
+}
+.grade-card.grade-A .grade-icon { background: var(--good); }
+.grade-card.grade-B .grade-icon { background: var(--accent); }
+.grade-card.grade-C .grade-icon { background: var(--fair); }
+.grade-card.grade-D .grade-icon { background: var(--weak); }
+.grade-card .grade-info { flex: 1; min-width: 0; }
+.grade-card .grade-label { font-size: var(--f-caption); color: var(--text-2); }
+.grade-card .grade-name { font-size: 18px; font-weight: 700; letter-spacing: -0.3px; margin-top: 2px; }
+.grade-card .grade-reason { font-size: 14px; color: var(--text-2); }
+
+/* 逐词反馈(发音纠错)更明显 */
+.word-feedback {
+  display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px;
+}
+.word-feedback .word {
+  padding: 4px 10px; border-radius: 10px; cursor: pointer;
+  font-size: 16px; font-weight: 500;
+  border: 1.5px solid transparent;
+  transition: transform 0.1s var(--ease);
+}
+.word-feedback .word:active { transform: scale(0.94); }
+.word-feedback .word.good {
+  background: var(--good-bg); color: #1A6E33;
+  border-color: rgba(47,168,79,0.4);
+}
+.word-feedback .word.weak {
+  background: var(--weak-bg); color: #B73033;
+  border-color: rgba(229,72,77,0.5);
+  text-decoration: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: rgba(229,72,77,0.5);
+}
+.word-feedback .word.fair {
+  background: var(--fair-bg); color: #A35C00;
+  border-color: rgba(232,137,12,0.4);
+}

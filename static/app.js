@@ -177,35 +177,34 @@
     const courseId = parts[3];
     course = null; session = null;
     app.innerHTML = `
-      <div class="view">
+      <div class="view session-view">
         <nav class="glass nav">
           <button class="back" data-nav="/learn">‹ 课程</button>
           <div class="title" id="navTitle">加载课程…</div>
           <div class="spacer"></div>
           <div class="seg-track" id="segTrack"></div>
         </nav>
-        <div class="content" id="thread"></div>
-        <div class="glass speak-bar" id="speakBar" style="display:none">
-          <button class="btn btn-primary" id="startCall" style="font-size:18px;padding:14px 30px">🎙️ 开始通话</button>
-        </div>
-        <div class="glass speak-bar call-bar" id="callBar" style="display:none">
-          <div class="call-dot" id="callDot"></div>
-          <div class="call-info">
-            <div class="call-status" id="callStatus">🎙️ 通话中</div>
-            <div class="speak-hint" id="speakHint">AI 说完后,你直接开口说英语</div>
+        <div class="seg-hero" id="segHero">
+          <div class="seg-icon" id="segIcon">🤝</div>
+          <div class="seg-info">
+            <div class="seg-name" id="segName">加载中…</div>
+            <div class="seg-meta" id="segMeta"></div>
           </div>
-          <div class="call-actions">
+        </div>
+        <div class="content" id="thread"></div>
+        <div class="speak-stage" id="speakStage" data-stage="idle">
+          <div class="stage-mic">
+            <button class="big-mic-btn" id="bigMicBtn" aria-label="开始说话">
+              <span class="big-mic-icon" id="bigMicIcon">🎙️</span>
+            </button>
+            <div class="stage-pulse" id="stagePulse"></div>
+          </div>
+          <div class="stage-text" id="stageText">点这里开始对话</div>
+          <div class="stage-tip" id="stageTip">AI 老师说完后,你直接开口说英语</div>
+          <div class="stage-actions" id="stageActions">
             <button class="btn-ghost" id="typeBtn">⌨️ 打字</button>
             <button class="btn btn-danger" id="endBtn">结束</button>
           </div>
-        </div>
-        <div class="glass speak-bar" id="typeBar" style="display:none">
-          <input type="text" id="typeInput" placeholder="悦琳说的话(英文),回车发送…" style="flex:1;font-size:16px">
-          <button class="btn btn-primary" id="typeSend">发送</button>
-        </div>
-        <div class="glass speak-bar" id="loadingBar" style="display:none">
-          <button class="speak-btn thinking">…</button>
-          <div class="speak-hint">正在准备会话</div>
         </div>
       </div>`;
     bindNav();
@@ -232,7 +231,27 @@
       $("#speakBar").style.display = "flex";
       bindSpeak();
       addAIMessage(res.ai_message, res.segment);
+      updateSegment(res.segment);
     } catch (e) { toast(e.message); }
+  }
+
+  function updateSegment(segment) {
+    if (!segment) return;
+    const seg = (course.segments || []).find((s) => s.code === segment.code);
+    if (seg) {
+      $("#segName").textContent = seg.name_zh || segment.code;
+      $("#segMeta").textContent = `${segment.code} · ${seg.minutes} 分钟`;
+      $("#segIcon").textContent = segIcon(segment.code);
+    } else if (segment.code === "REVIEW") {
+      $("#segName").textContent = "复习往期易错点";
+      $("#segMeta").textContent = "REVIEW · 巩固练习";
+      $("#segIcon").textContent = "🔁";
+    }
+  }
+
+  function segIcon(code) {
+    const map = { MEET: "🤝", FEEL: "😊", FIND: "🔍", TEST: "📝", COLOR: "🎨", EAT: "🍎", COUNT: "🔢" };
+    return map[code] || "📖";
   }
 
   function renderSegTrack(idx) {
@@ -252,13 +271,24 @@
     div.className = "msg ai";
     div.innerHTML = `
       <div class="avatar">🤖</div>
-      <div class="bubble">${segBanner}<div class="txt">${esc(text)}</div>
+      <div class="bubble">
+        ${segBanner}
+        <div class="txt">${esc(text)}</div>
+        <button class="bubble-translate" aria-label="查看中文意思"><span class="tr-icon">💡</span><span class="tr-text">看中文</span></button>
+        <div class="bubble-zh" hidden></div>
         <div class="actions"><button class="replay">🔊 再听一遍</button></div>
       </div>`;
     thread.appendChild(div);
     $(`.replay`, div).onclick = () => speak(text, () => {});
+    const trBtn = $(`.bubble-translate`, div);
+    const trBox = $(`.bubble-zh`, div);
+    trBtn.onclick = () => {
+      const show = trBox.hidden;
+      trBox.hidden = !show;
+      trBtn.querySelector(".tr-text").textContent = show ? "收起" : "看中文";
+      if (show && !trBox.textContent) trBox.textContent = "（中文翻译将在开启 DeepSeek 后自动生成）";
+    };
     speak(text, () => {
-      // AI 朗读完后,自动回到聆听状态(自动通话)
       if (callActive && session && !session.done && window.__scheduleListen) {
         window.__scheduleListen();
       }
@@ -283,48 +313,91 @@
   }
 
   function bindSpeak() {
-    const hint = $("#speakHint");
-    const statusEl = $("#callStatus");
-    const dot = $("#callDot");
-    const typeBtn = $("#typeBtn");
-    const typeBar = $("#typeBar");
-    const typeInput = $("#typeInput");
-    const typeSend = $("#typeSend");
+    const stage = $("#speakStage");
+    const bigBtn = $("#bigMicBtn");
+    const bigIcon = $("#bigMicIcon");
+    const stageText = $("#stageText");
+    const stageTip = $("#stageTip");
+    const stageActions = $("#stageActions");
     const endBtn = $("#endBtn");
-    const startCall = $("#startCall");
+    const typeBtn = $("#typeBtn");
+
+    // 简易打字弹窗(避免重写原 typeBar 逻辑)
+    let typeBar = null, typeInput = null, typeSend = null;
 
     let recognition = null;
     let finalText = "";
     let handled = false;
+
+    function setStage(name) {
+      stage.setAttribute("data-stage", name);
+      if (name === "idle") {
+        bigIcon.textContent = "🎙️";
+        stageText.textContent = "点这里开始对话";
+        stageTip.textContent = "AI 老师说完后,你直接开口说英语";
+        stageActions.style.display = "none";
+      } else if (name === "listening") {
+        bigIcon.textContent = "🎤";
+        stageText.textContent = "正在听你说…";
+        stageTip.textContent = "说完停顿一下,AI 老师会自动接话";
+        stageActions.style.display = "flex";
+      } else if (name === "thinking") {
+        bigIcon.textContent = "⏳";
+        stageText.textContent = "AI 老师思考中…";
+        stageTip.textContent = "稍等一下,看老师怎么回应";
+        stageActions.style.display = "flex";
+      } else if (name === "done") {
+        bigIcon.textContent = "🎉";
+        stageText.textContent = "完成啦!";
+        stageTip.textContent = "正在准备练习总结…";
+        stageActions.style.display = "none";
+      }
+    }
+    window.__setStage = setStage;
 
     function stopCall() {
       callActive = false;
       if (recognition) { try { recognition.stop(); } catch (e) {} }
     }
 
-    startCall.onclick = () => {
+    bigBtn.onclick = () => {
       if (callActive) return;
       callActive = true;
-      $("#speakBar").style.display = "none";
-      $("#callBar").style.display = "flex";
-      if (!initRecognition()) return;        // 不支持语音 → 提示打字
-      scheduleListen();                       // 在用户手势内启动识别(授权)
+      setStage("listening");
+      if (!initRecognition()) return;
+      scheduleListen();
     };
 
     endBtn.onclick = () => { stopCall(); finishSession(); };
-    typeBtn.onclick = () => { typeBar.style.display = "flex"; typeInput.focus(); };
-    typeSend.onclick = () => {
-      const v = (typeInput.value || "").trim();
-      typeInput.value = "";
-      if (v) { stopCall(); sendText(v); }
+
+    typeBtn.onclick = () => {
+      if (!typeBar) {
+        typeBar = document.createElement("div");
+        typeBar.className = "glass speak-bar";
+        typeBar.id = "typeBar";
+        typeBar.innerHTML = `
+          <input type="text" id="typeInput" placeholder="悦琳说的话(英文),回车发送…" style="flex:1;font-size:16px">
+          <button class="btn btn-primary" id="typeSend">发送</button>`;
+        stage.parentNode.insertBefore(typeBar, stage.nextSibling);
+        typeInput = typeBar.querySelector("#typeInput");
+        typeSend = typeBar.querySelector("#typeSend");
+        typeSend.onclick = () => {
+          const v = (typeInput.value || "").trim();
+          typeInput.value = "";
+          if (v) { stopCall(); sendText(v); }
+        };
+        typeInput.addEventListener("keydown", (e) => { if (e.key === "Enter") typeSend.click(); });
+      }
+      typeBar.style.display = "flex";
+      typeInput.focus();
     };
-    typeInput.addEventListener("keydown", (e) => { if (e.key === "Enter") typeSend.click(); });
 
     function initRecognition() {
       const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (!SR) {
-        statusEl.textContent = "⌨️ 打字模式";
-        hint.textContent = "本浏览器不支持语音识别,请用「打字」";
+        bigIcon.textContent = "⌨️";
+        stageText.textContent = "打字模式";
+        stageTip.textContent = "本浏览器不支持语音识别,点「打字」输入";
         return false;
       }
       recognition = new SR();
@@ -334,22 +407,20 @@
       recognition.maxAlternatives = 1;
       recognition.onstart = () => {
         handled = false;
-        statusEl.textContent = "🎤 听你说…";
-        dot.classList.add("listening");
-        hint.textContent = "正在听,说完停顿一下";
+        setStage("listening");
       };
       recognition.onresult = (e) => { finalText = (e.results[0][0].transcript || "").trim(); };
-      recognition.onerror = () => { if (callActive && !handled) { handled = true; scheduleListen(); } };
+      recognition.onerror = () => { if (callActive && !handled) { handled = true; setStage("listening"); scheduleListen(); } };
       recognition.onend = async () => {
-        dot.classList.remove("listening");
         if (!callActive || handled) return;
         handled = true;
         if (finalText) {
           const text = finalText; finalText = "";
-          statusEl.textContent = "💭 思考中…";
-          hint.textContent = "AI 正在回应";
-          try { await sendText(text); } catch (err) { toast(err.message); scheduleListen(); }
+          setStage("thinking");
+          try { await sendText(text); }
+          catch (err) { toast(err.message); setStage("listening"); scheduleListen(); }
         } else {
+          setStage("listening");
           scheduleListen();
         }
       };
@@ -358,8 +429,7 @@
 
     function scheduleListen() {
       if (!callActive) return;
-      statusEl.textContent = "🎙️ 通话中";
-      hint.textContent = "AI 说完后,你直接开口说英语";
+      setStage("listening");
       setTimeout(() => {
         if (callActive && recognition && recognition.state !== "running") {
           try { recognition.start(); } catch (e) {}
@@ -388,23 +458,76 @@
   async function sendText(text) {
     if (!text || !session) return;
     addStudentMessage(text, null);
+    setStage("thinking");
     try {
       const r = await postJSON("/api/chat/reply", { session, text });
       session = r.session;
       if (r.feedback) {
-        // 更新孩子气泡的逐词反馈
         const lastMsg = [...$("#thread").querySelectorAll(".msg.student")].pop();
         const words = (r.feedback.words || []).map((w) =>
-          `<span class="word ${w.label}" title="得分 ${w.score}">${esc(w.word)}</span>`).join("");
+          `<span class="word ${w.label}" title="得分 ${w.score}" onclick="speak('${esc(w.word)}')">${esc(w.word)}</span>`).join("");
         if (lastMsg) lastMsg.querySelector(".bubble").insertAdjacentHTML("beforeend", `<div class="word-feedback">${words}</div>`);
       }
+      // 鼓励反馈
+      const encourage = r.encouragement || (r.grade ? encourageFor(r.grade) : "👍 收到!");
+      appendEncourage(encourage);
+      // 环节评级卡片(环节切换时)
+      if (r.grade) showGradeCard(r.grade, r.segment_name);
       renderSegTrack(session.segment_idx);
+      updateSegment(r.ai_message.segment);
       addAIMessage(r.ai_message.text, r.ai_message.segment);
-      if (r.grade) toast(`本环节评级:${r.grade}`);
       if (session.done) {
+        setStage("done");
         setTimeout(() => finishSession(), 2500);
+      } else {
+        setStage("listening");
       }
-    } catch (e) { toast(e.message); }
+    } catch (e) {
+      toast(e.message);
+      setStage("listening");
+    }
+  }
+
+  function encourageFor(grade) {
+    const map = {
+      A: "🌟 完美!发音清晰又准确",
+      B: "👍 很棒!继续保持",
+      C: "💪 不错,再练一次会更好",
+      D: "🌱 没关系,多说就熟悉了",
+    };
+    return map[grade] || "👍 收到!";
+  }
+
+  function appendEncourage(text) {
+    const thread = $("#thread");
+    const div = document.createElement("div");
+    div.className = "encourage-msg";
+    div.innerHTML = `<span>${esc(text)}</span>`;
+    thread.appendChild(div);
+    thread.scrollTop = thread.scrollHeight;
+  }
+
+  function showGradeCard(grade, name) {
+    const thread = $("#thread");
+    const reason = {
+      A: "发音和节奏都很棒",
+      B: "整体不错,继续保持",
+      C: "有几个词需要再练练",
+      D: "这一段有点难,慢慢来",
+    }[grade] || "";
+    const div = document.createElement("div");
+    div.className = `grade-card grade-${grade}`;
+    div.innerHTML = `
+      <div class="grade-head">
+        <div class="grade-icon">${grade}</div>
+        <div class="grade-info">
+          <div class="grade-label">本环节完成</div>
+          <div class="grade-name">${esc(name || "")}</div>
+        </div>
+      </div>
+      <div class="grade-reason">${esc(reason)}</div>`;
+    thread.appendChild(div);
+    thread.scrollTop = thread.scrollHeight;
   }
 
   async function finishSession() {

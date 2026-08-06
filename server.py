@@ -195,7 +195,30 @@ def chat_reply(payload: dict):
     session["segment_idx"] = new_segment_idx
     session["grades"]["segments"][seg_key] = grade
     session["done"] = bool(ai.get("done"))
-    return {"ok": True, "session": session, "ai_message": ai, "feedback": feedback, "grade": grade}
+    seg_name = ""
+    if segment_idx < total:
+        seg_name = course["segments"][segment_idx].get("name_zh", "") or course["segments"][segment_idx].get("code", "")
+    elif ai.get("review_start"):
+        seg_name = "往期易错点"
+    return {
+        "ok": True,
+        "session": session,
+        "ai_message": ai,
+        "feedback": feedback,
+        "grade": grade,
+        "segment_name": seg_name,
+        "encouragement": _encouragement(grade),
+    }
+
+
+def _encouragement(grade: str) -> str:
+    """按评级给鼓励文案(孩子优先,绝不批评)。"""
+    return {
+        "A": "🌟 完美!发音清晰又准确",
+        "B": "👍 很棒!继续保持",
+        "C": "💪 不错,再练一次会更好",
+        "D": "🌱 没关系,多说就熟悉了",
+    }.get(grade, "👍 收到!")
 
 
 @app.post("/api/summary")
