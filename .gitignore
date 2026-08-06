@@ -20,6 +20,10 @@ data/uploads/
 .test_*
 .tmp_*
 
+# 本地开发辅助(仅 localhost 生效,生产环境不影响家长模式安全)
+static/_dev_pin.html
+static/_test_*.html
+
 # 系统文件
 .DS_Store
 Thumbs.db

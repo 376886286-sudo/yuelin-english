@@ -561,9 +561,45 @@
   }
 
   /* ---------------- 家长模式:PIN ---------------- */
+  const PIN_MAX_TRIES = 5;
+  const PIN_LOCK_MS = 30000;
+
   function renderPin() {
     if (sessionStorage.getItem("parent_ok")) { location.hash = "/parent/dashboard"; return; }
     let pin = "";
+    let errorCount = 0;
+    let lockUntil = Number(sessionStorage.getItem("pin_lock_until") || 0);
+
+    function remainingSec() {
+      const ms = lockUntil - Date.now();
+      return ms > 0 ? Math.ceil(ms / 1000) : 0;
+    }
+    function lockedHtml() {
+      const sec = remainingSec();
+      return `
+        <div class="pin-logo">🔒</div>
+        <h2 class="page-title" style="text-align:center">已锁定</h2>
+        <p class="page-sub caption" style="text-align:center" id="lockHint">连续输错 ${PIN_MAX_TRIES} 次,请等待 <b id="lockCountdown">${sec}</b> 秒后重试</p>
+        <button class="btn-ghost" data-nav="/" style="margin-top:24px">‹ 返回首页</button>`;
+    }
+    function startCountdown() {
+      if (remainingSec() <= 0) { location.hash = "/parent"; return; }
+      const hint = $("#lockCountdown");
+      if (!hint) return;
+      const t = setInterval(() => {
+        const sec = remainingSec();
+        if (sec <= 0) { clearInterval(t); location.hash = "/parent"; return; }
+        hint.textContent = sec;
+      }, 1000);
+    }
+
+    if (lockUntil > Date.now()) {
+      app.innerHTML = `<div class="view"><div class="content center">${lockedHtml()}</div></div>`;
+      bindNav();
+      startCountdown();
+      return;
+    }
+
     app.innerHTML = `
       <div class="view"><div class="content center">
         <div class="pin-logo">👨‍👧</div>
@@ -584,9 +620,26 @@
     async function submit() {
       try {
         const r = await api("/api/parent/verify", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: `pin=${encodeURIComponent(pin)}` });
-        if (r.ok) { sessionStorage.setItem("parent_ok", "1"); location.hash = "/parent/dashboard"; return; }
+        if (r.ok) {
+          errorCount = 0;
+          sessionStorage.removeItem("pin_lock_until");
+          sessionStorage.setItem("parent_ok", "1");
+          location.hash = "/parent/dashboard";
+          return;
+        }
         throw new Error("PIN 不正确");
-      } catch (e) { toast(e.message || "PIN 不正确"); pin = ""; renderDots(); }
+      } catch (e) {
+        errorCount++;
+        if (errorCount >= PIN_MAX_TRIES) {
+          lockUntil = Date.now() + PIN_LOCK_MS;
+          sessionStorage.setItem("pin_lock_until", String(lockUntil));
+          location.hash = "/parent";
+          return;
+        }
+        toast(`${e.message || "PIN 不正确"},还可试 ${PIN_MAX_TRIES - errorCount} 次`);
+        pin = "";
+        renderDots();
+      }
     }
     pad.querySelectorAll(".pin-key").forEach((b) => {
       b.addEventListener("click", () => {
