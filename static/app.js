@@ -227,8 +227,8 @@
         tip.textContent = `练习完教案后,还有 ${res.review_count} 条易错点复习(家长已确认)`;
         thread.appendChild(tip);
       }
-      $("#loadingBar").style.display = "none";
-      $("#speakBar").style.display = "flex";
+      // 录音舞台在模板里默认显示,这里只做防御性兜底
+      $("#speakStage")?.classList.add("ready");
       bindSpeak();
       addAIMessage(res.ai_message, res.segment);
       updateSegment(res.segment);
