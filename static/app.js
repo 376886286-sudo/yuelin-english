@@ -164,7 +164,7 @@
           <div class="meta" style="margin-top:6px">${esc(segs || "三环节")}</div>
         </div>`;
       }).join("");
-      ctaBar.style.display = "flex";
+      if (ctaBar) ctaBar.style.display = "flex";
       grid.querySelectorAll(".course-card").forEach((el) => {
         el.onclick = () => { selectedId = (selectedId === el.dataset.id ? "" : el.dataset.id); updateSelection(); };
       });
@@ -717,7 +717,7 @@
           <button class="btn btn-danger" id="batchDel" style="padding:6px 16px;font-size:13px">删除选中</button>
         </div>
         <div class="list" id="courseList"></div>
-      </div>`);
+      </div>`, false, false);
     bindParentNav();
     const dz = $("#dropzone");
     const fi = $("#fileInput");
@@ -738,7 +738,7 @@
           toast(`解析 ${f.name}…`);
           const r = await api("/api/lessons/upload", { method: "POST", body: fd });
           preview = r.preview;
-          $("#previewBox").style.display = "block";
+          const pb = $("#previewBox"); if (pb) pb.style.display = "block";
           $("#preview").innerHTML = previewHtml(preview);
         } catch (e) { toast(e.message); }
       }
@@ -748,11 +748,11 @@
       try {
         const r = await postJSON("/api/lessons", { lesson: preview });
         toast("课程已入库");
-        $("#previewBox").style.display = "none";
+        const pb2 = $("#previewBox"); if (pb2) pb2.style.display = "none";
         renderCoursesList();
       } catch (e) { toast(e.message); }
     };
-    $("#cancelBtn").onclick = () => { preview = null; $("#previewBox").style.display = "none"; };
+    $("#cancelBtn").onclick = () => { preview = null; const pb3 = $("#previewBox"); if (pb3) pb3.style.display = "none"; };
     renderCoursesList();
 
     function previewHtml(p) {
@@ -858,7 +858,7 @@
       <div class="section">
         <h3>当前复习包</h3>
         <div class="list" id="curPack"></div>
-      </div>`);
+      </div>`, false, false);
     bindParentNav();
     let allErrors = [];
     let selected = new Set();
@@ -1010,7 +1010,7 @@
   }
 
   /* ---------------- 家长外壳 ---------------- */
-  function parentShell(title, body, back = false) {
+  function parentShell(title, body, back = false, noCta = true) {
     return `
       <div class="view">
         <nav class="glass nav">
@@ -1018,7 +1018,7 @@
           <div class="title">${esc(title)}</div>
           <div class="spacer"></div>
         </nav>
-        <div class="content">
+        <div class="content${noCta ? " no-cta" : ""}">
           <div class="tabbar">
             ${[["📊 仪表盘", "/parent/dashboard"], ["📚 教案库", "/parent/lessons"], ["📌 易错点", "/parent/review"], ["💬 会话记录", "/parent/records"], ["⚙ 设置", "/parent/settings"]]
               .map(([t, h]) => `<button class="tab-btn" data-nav="${h}">${t}</button>`).join("")}

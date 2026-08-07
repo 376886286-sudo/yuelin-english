@@ -155,6 +155,7 @@ body {
   padding: var(--s-4) var(--s-3) 110px;
   scroll-behavior: smooth;
 }
+.content.no-cta { padding-bottom: var(--s-4); }   /* 无底部栏页面:设置/记录/复习 */
 .content.center { display: flex; flex-direction: column; align-items: center; justify-content: center; }
 
 /* ---------------- 排版层级 ---------------- */
