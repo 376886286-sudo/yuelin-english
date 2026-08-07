@@ -42,6 +42,7 @@
   let course = null;       // 当前课程
   let segTrack = [];       // 环节代号列表
   let callActive = false;  // 自动通话模式是否开启
+  let sessionStart = 0;    // 会话开始时间戳(ms)
 
   /* ---------------- 路由 ---------------- */
   const routes = {
@@ -167,6 +168,14 @@
       if (ctaBar) ctaBar.style.display = "flex";
       grid.querySelectorAll(".course-card").forEach((el) => {
         el.onclick = () => { selectedId = (selectedId === el.dataset.id ? "" : el.dataset.id); updateSelection(); };
+        // 鼠标追踪光晕
+        el.addEventListener("mousemove", (e) => {
+          const rect = el.getBoundingClientRect();
+          const x = ((e.clientX - rect.left) / rect.width) * 100;
+          const y = ((e.clientY - rect.top) / rect.height) * 100;
+          el.style.setProperty("--mouse-x", x + "%");
+          el.style.setProperty("--mouse-y", y + "%");
+        });
       });
       startBtn.onclick = () => { if (selectedId) location.hash = `/learn/s/${selectedId}`; };
     } catch (e) { toast(e.message); }
@@ -217,6 +226,7 @@
       renderSegTrack(0);
       const res = await postJSON("/api/chat/session", { course_id: courseId });
       session = res.session;
+      sessionStart = Date.now();
       if (res.review_count > 0) segTrack.push("REVIEW");
       renderSegTrack(0);
       if (res.review_count > 0) {
@@ -440,7 +450,9 @@
   }
 
   function expectedSentence() {
+    if (!course || !course.segments) return "";
     const seg = course.segments[Math.min(session?.segment_idx ?? 0, course.segments.length - 1)];
+    if (!seg) return "";
     const b = (seg?.dialogue || []).find(([r]) => r === "B");
     return (b && b[1]) || (seg?.patterns || [])[0] || "";
   }
@@ -532,7 +544,8 @@
 
   async function finishSession() {
     try {
-      const r = await postJSON("/api/summary", { session, duration_min: 8 });
+      const durationMin = sessionStart ? Math.round((Date.now() - sessionStart) / 60000) : 0;
+      const r = await postJSON("/api/summary", { session, duration_min: Math.max(1, durationMin) });
       session = null;
       location.hash = "/learn/done";
     } catch (e) { toast(e.message); }
@@ -576,20 +589,43 @@
     }
     function lockedHtml() {
       const sec = remainingSec();
+      const total = PIN_LOCK_MS / 1000; // 30
+      const circumference = 2 * Math.PI * 52; // ~326.73
+      const offset = circumference * (1 - sec / total);
       return `
-        <div class="pin-logo">🔒</div>
+        <div class="pin-lock-ring">
+          <svg viewBox="0 0 120 120">
+            <defs>
+              <linearGradient id="lockGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#3DB9FF"/>
+                <stop offset="100%" stop-color="#8A5CFF"/>
+              </linearGradient>
+            </defs>
+            <circle class="bg-circle" cx="60" cy="60" r="52"/>
+            <circle class="fg-circle" cx="60" cy="60" r="52"
+              stroke-dasharray="${circumference}"
+              stroke-dashoffset="${offset}"/>
+          </svg>
+          <div class="lock-icon">🔒</div>
+          <div class="lock-countdown" id="lockCountdown">${sec}</div>
+        </div>
         <h2 class="page-title" style="text-align:center">已锁定</h2>
-        <p class="page-sub caption" style="text-align:center" id="lockHint">连续输错 ${PIN_MAX_TRIES} 次,请等待 <b id="lockCountdown">${sec}</b> 秒后重试</p>
+        <p class="page-sub caption" style="text-align:center">连续输错 ${PIN_MAX_TRIES} 次,请等待 <b>${sec}</b> 秒后重试</p>
         <button class="btn-ghost" data-nav="/" style="margin-top:24px">‹ 返回首页</button>`;
     }
     function startCountdown() {
       if (remainingSec() <= 0) { location.hash = "/parent"; return; }
-      const hint = $("#lockCountdown");
-      if (!hint) return;
+      const el = $("#lockCountdown");
+      const circle = document.querySelector(".fg-circle");
+      if (!el || !circle) return;
+      const total = PIN_LOCK_MS / 1000;
+      const circumference = 2 * Math.PI * 52;
       const t = setInterval(() => {
         const sec = remainingSec();
         if (sec <= 0) { clearInterval(t); location.hash = "/parent"; return; }
-        hint.textContent = sec;
+        el.textContent = sec;
+        const offset = circumference * (1 - sec / total);
+        circle.setAttribute("stroke-dashoffset", offset);
       }, 1000);
     }
 
@@ -656,14 +692,14 @@
   async function renderDashboard() {
     if (!requireParent()) return;
     app.innerHTML = parentShell("仪表盘", `
-      <div class="metric-grid">
+      <div class="metric-grid stagger-metrics">
         <div class="metric"><div class="label">本周练习次数</div><div class="value" id="mCount">–</div></div>
         <div class="metric"><div class="label">本周时长(分)</div><div class="value" id="mMin">–</div></div>
         <div class="metric"><div class="label">平均评级</div><div class="value" id="mGrade">–</div></div>
       </div>
       <div class="section">
         <h3>最近会话</h3>
-        <div class="list" id="recent"></div>
+        <div class="list stagger-list" id="recent"></div>
       </div>`);
     bindParentNav();
     try {
@@ -716,7 +752,7 @@
           <span id="toolbarCount" style="font-size:14px;color:var(--text-2)">已选 0 个</span>
           <button class="btn btn-danger" id="batchDel" style="padding:6px 16px;font-size:13px">删除选中</button>
         </div>
-        <div class="list" id="courseList"></div>
+        <div class="list stagger-list" id="courseList"></div>
       </div>`, false, false);
     bindParentNav();
     const dz = $("#dropzone");
@@ -849,7 +885,7 @@
       <div class="section">
         <h3>往期易错点</h3>
         <p class="caption" style="margin-bottom:12px">从历史跟读记录中提取。勾选后确认,下节课练习完教案会自动追加这些复习。最多 6 条。</p>
-        <div class="list" id="errorList">加载中…</div>
+        <div class="list stagger-list" id="errorList">加载中…</div>
       </div>
       <div style="display:flex;gap:12px;margin-bottom:32px">
         <button class="btn btn-primary" id="savePack">确认并保存复习包</button>
@@ -857,7 +893,7 @@
       </div>
       <div class="section">
         <h3>当前复习包</h3>
-        <div class="list" id="curPack"></div>
+        <div class="list stagger-list" id="curPack"></div>
       </div>`, false, false);
     bindParentNav();
     let allErrors = [];
@@ -923,7 +959,7 @@
   async function renderRecords() {
     if (!requireParent()) return;
     app.innerHTML = parentShell("会话记录", `
-      <div class="list" id="records"></div>`);
+      <div class="list stagger-list" id="records"></div>`);
     bindParentNav();
     try {
       const { records } = await api("/api/sessions");

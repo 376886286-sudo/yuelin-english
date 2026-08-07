@@ -90,7 +90,10 @@ async def lesson_upload(file: UploadFile = File(...)):
 @app.post("/api/lessons")
 def lesson_confirm(payload: dict):
     """确认预览教案入库为课程。"""
-    course = storage.save_course(payload.get("lesson", {}))
+    lesson = payload.get("lesson", {})
+    if not lesson.get("title_zh") or not lesson.get("segments"):
+        return JSONResponse({"ok": False, "error": "教案缺少标题或环节,请重新上传"}, status_code=400)
+    course = storage.save_course(lesson)
     return {"ok": True, "course": course}
 
 
@@ -101,6 +104,8 @@ def lessons_list():
 
 @app.delete("/api/lessons/{course_id}")
 def lesson_delete(course_id: str):
+    if not storage.get_course(course_id):
+        return JSONResponse({"ok": False, "error": "课程不存在"}, status_code=404)
     storage.delete_course(course_id)
     return {"ok": True}
 
@@ -226,6 +231,8 @@ def summary(payload: dict):
     """结束会话:生成跟读记录并入库。"""
     session = payload.get("session", {})
     course = storage.get_course(session.get("course_id", ""))
+    if not course:
+        return JSONResponse({"ok": False, "error": "课程不存在"}, status_code=404)
     record = llm.generate_record(course, session.get("exchanges", []), session.get("grades", {}))
     record["id"] = uuid.uuid4().hex[:10]
     record["date"] = time.strftime("%Y-%m-%d %H:%M")
