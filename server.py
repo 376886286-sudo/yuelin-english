@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app import azure_speech, llm, storage
@@ -147,11 +147,31 @@ def chat_session(payload: dict):
 
 @app.post("/api/recognize")
 async def recognize(audio: UploadFile | None = File(None), expected: str = Form("")):
-    """识别孩子音频。mock:直接返回预期句。"""
+    """识别孩子音频。
+
+    - 真实模式:Azure 识别 + free-form 发音评估,返回 {text, feedback}
+    - mock 模式:直接返回预期句
+    """
     raw = await audio.read() if audio else b""
     result = azure_speech.recognize(raw, expected=expected)
-    storage.add_usage(stt_seconds=max(3, len(expected.split()) * 2))
+    if raw:
+        storage.add_usage(stt_seconds=max(3, len(raw) / 32000), pron_seconds=max(3, len(raw) / 32000))
+    else:
+        storage.add_usage(stt_seconds=max(3, len(expected.split()) * 2))
     return {"ok": True, **result}
+
+
+@app.post("/api/tts")
+def tts(payload: dict):
+    """AI 文本合成语音。真实模式返回 mp3;失败/mock 返回 browser 标记由前端兜底。"""
+    text = (payload.get("text") or "").strip()
+    if not text:
+        return JSONResponse({"ok": False, "error": "缺少文本"}, status_code=400)
+    result = azure_speech.tts(text)
+    if result.get("mode") == "azure":
+        storage.add_usage(tts_chars=len(text))
+        return Response(content=result["audio"], media_type="audio/mpeg")
+    return {"ok": True, "mode": "browser", "text": text}
 
 
 def _mock_grade(feedback: dict) -> str:
@@ -169,7 +189,11 @@ def _mock_grade(feedback: dict) -> str:
 
 @app.post("/api/chat/reply")
 def chat_reply(payload: dict):
-    """孩子说话后:发音评估 + AI 回应。"""
+    """孩子说话后:发音评估 + AI 回应。
+
+    - 语音链路:前端把 /api/recognize 的真实逐词评估(words)传上来,直接使用
+    - 打字链路:无音频,用 mock 逐词打分兜底,结构一致
+    """
     session = payload.get("session", {})
     student_text = (payload.get("text") or "").strip()
     course = storage.get_course(session.get("course_id", ""))
@@ -181,7 +205,7 @@ def chat_reply(payload: dict):
     segment_idx = session.get("segment_idx", 0)
     seg_key = course["segments"][segment_idx]["code"] if segment_idx < total else "REVIEW"
 
-    words = azure_speech.pronunciation(student_text)
+    words = payload.get("words") or azure_speech.pronunciation(student_text)
     feedback = {
         "words": words,
         "overall": round(sum(w["score"] for w in words) / len(words)) if words else 0,

@@ -28,6 +28,30 @@
   }
 
   function speak(text, onEnd) {
+    if (!text) { if (onEnd) setTimeout(onEnd, 0); return; }
+    if (window.__azureOn) {
+      fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      }).then((res) => {
+        if (res.ok && (res.headers.get("content-type") || "").includes("audio")) {
+          return res.blob().then((blob) => {
+            const url = URL.createObjectURL(blob);
+            const audio = new Audio(url);
+            audio.onended = () => { URL.revokeObjectURL(url); if (onEnd) onEnd(); };
+            audio.onerror = () => { URL.revokeObjectURL(url); if (onEnd) onEnd(); };
+            audio.play().catch(() => { URL.revokeObjectURL(url); if (onEnd) onEnd(); });
+          });
+        }
+        throw new Error("browser-fallback");
+      }).catch(() => { browserSpeak(text, onEnd); });
+      return;
+    }
+    browserSpeak(text, onEnd);
+  }
+
+  function browserSpeak(text, onEnd) {
     if (!("speechSynthesis" in window) || !text) { if (onEnd) setTimeout(onEnd, 0); return; }
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
@@ -36,6 +60,7 @@
     u.onerror = () => { if (onEnd) onEnd(); };
     window.speechSynthesis.speak(u);
   }
+  window.speak = speak; // 供模板内联 onclick(单词朗读)使用
 
   /* ---------------- 会话全局状态 ---------------- */
   let session = null;      // 后端会话
@@ -239,6 +264,10 @@
       }
       // 录音舞台在模板里默认显示,这里只做防御性兜底
       $("#speakStage")?.classList.add("ready");
+      try {
+        const st = await api("/api/status");
+        window.__azureOn = !!(st.azure && st.azure.enabled);
+      } catch (e) { window.__azureOn = false; }
       bindSpeak();
       addAIMessage(res.ai_message, res.segment);
       updateSegment(res.segment);
@@ -336,38 +365,14 @@
     let typeBar = null, typeInput = null, typeSend = null;
 
     let recognition = null;
+    let recorder = null;     // 录音管理器(Azure 真实链路)
     let finalText = "";
     let handled = false;
-
-    function setStage(name) {
-      stage.setAttribute("data-stage", name);
-      if (name === "idle") {
-        bigIcon.textContent = "🎙️";
-        stageText.textContent = "点这里开始对话";
-        stageTip.textContent = "AI 老师说完后,你直接开口说英语";
-        stageActions.style.display = "none";
-      } else if (name === "listening") {
-        bigIcon.textContent = "🎤";
-        stageText.textContent = "正在听你说…";
-        stageTip.textContent = "说完停顿一下,AI 老师会自动接话";
-        stageActions.style.display = "flex";
-      } else if (name === "thinking") {
-        bigIcon.textContent = "⏳";
-        stageText.textContent = "AI 老师思考中…";
-        stageTip.textContent = "稍等一下,看老师怎么回应";
-        stageActions.style.display = "flex";
-      } else if (name === "done") {
-        bigIcon.textContent = "🎉";
-        stageText.textContent = "完成啦!";
-        stageTip.textContent = "正在准备练习总结…";
-        stageActions.style.display = "none";
-      }
-    }
-    window.__setStage = setStage;
 
     function stopCall() {
       callActive = false;
       if (recognition) { try { recognition.stop(); } catch (e) {} }
+      if (recorder) { stopRecorder(recorder); recorder = null; }
     }
 
     bigBtn.onclick = () => {
@@ -394,7 +399,7 @@
         typeSend.onclick = () => {
           const v = (typeInput.value || "").trim();
           typeInput.value = "";
-          if (v) { stopCall(); sendText(v); }
+          if (v) { stopCall(); sendText(v, null); }
         };
         typeInput.addEventListener("keydown", (e) => { if (e.key === "Enter") typeSend.click(); });
       }
@@ -402,7 +407,94 @@
       typeInput.focus();
     };
 
+    /* ---- Azure 真实链路:录音 16kHz WAV → 上传识别 ---- */
+    function initRecordRecognition() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        bigIcon.textContent = "⌨️";
+        stageText.textContent = "打字模式";
+        stageTip.textContent = "麦克风不可用,点「打字」输入";
+        return false;
+      }
+      return true;
+    }
+
+    function startRecordListen() {
+      if (!callActive) return;
+      setStage("listening");
+      handled = false;
+      navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+        if (!callActive) { stream.getTracks().forEach((t) => t.stop()); return; }
+        const ctx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        const source = ctx.createMediaStreamSource(stream);
+        const proc = ctx.createScriptProcessor(4096, 1, 1);
+        const chunks = [];
+        proc.onaudioprocess = (e) => { chunks.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
+        const gain = ctx.createGain(); gain.gain.value = 0; // 防回声:录音不进扬声器
+        const analyser = ctx.createAnalyser(); analyser.fftSize = 1024;
+        source.connect(proc); proc.connect(gain); gain.connect(ctx.destination);
+        source.connect(analyser);
+        const level = new Uint8Array(analyser.fftSize);
+        let silenceMs = 0;
+        const rec = { stream, ctx, source, proc, gain, analyser, chunks, stopped: false };
+        recorder = rec;
+        // 静音 1.6 秒 = 说完,自动结束(替代 Web Speech 的自动 end)
+        rec.silTimer = setInterval(() => {
+          analyser.getByteTimeDomainData(level);
+          let max = 0;
+          for (let i = 0; i < level.length; i++) { const v = Math.abs(level[i] - 128); if (v > max) max = v; }
+          if (max < 12) { silenceMs += 200; if (silenceMs >= 1600) finishRecord(rec); }
+          else { silenceMs = 0; }
+        }, 200);
+        // 单句硬上限 12 秒
+        rec.hardTimer = setTimeout(() => finishRecord(rec), 12000);
+      }).catch(() => {
+        toast("麦克风不可用,请用打字输入");
+        setStage("listening");
+      });
+    }
+
+    function stopRecorder(rec) {
+      if (!rec || rec.stopped) return;
+      rec.stopped = true;
+      clearInterval(rec.silTimer); clearTimeout(rec.hardTimer);
+      try { rec.source.disconnect(); rec.proc.disconnect(); rec.gain.disconnect(); rec.analyser.disconnect(); } catch (e) {}
+      rec.stream.getTracks().forEach((t) => t.stop());
+      try { rec.ctx.close(); } catch (e) {}
+    }
+
+    function wavBlob(chunks) {
+      let len = 0;
+      chunks.forEach((c) => { len += c.length; });
+      const pcm = new Int16Array(len);
+      let off = 0;
+      for (const c of chunks) for (let i = 0; i < c.length; i++) pcm[off++] = (c[i] < 0 ? c[i] * 0x8000 : c[i] * 0x7fff) | 0;
+      const ab = new ArrayBuffer(44 + pcm.length * 2);
+      const dv = new DataView(ab);
+      const wstr = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+      wstr(0, "RIFF"); dv.setUint32(4, 36 + pcm.length * 2, true); wstr(8, "WAVE");
+      wstr(12, "fmt "); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+      dv.setUint32(24, 16000, true); dv.setUint32(28, 32000, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+      wstr(36, "data"); dv.setUint32(40, pcm.length * 2, true);
+      new Int16Array(ab, 44).set(pcm);
+      return new Blob([ab], { type: "audio/wav" });
+    }
+
+    function finishRecord(rec) {
+      stopRecorder(rec);
+      if (recorder === rec) recorder = null;
+      if (!callActive || handled) return;
+      handled = true;
+      const blob = wavBlob(rec.chunks);
+      if (blob.size < 2000) { // 太短 = 没说,重新听
+        setStage("listening"); scheduleListen(); return;
+      }
+      setStage("thinking");
+      sendAudio(blob).catch((err) => { toast(err.message); setStage("listening"); scheduleListen(); });
+    }
+
+    /* ---- 兜底:浏览器 Web Speech 识别 ---- */
     function initRecognition() {
+      if (window.__azureOn) return initRecordRecognition();
       const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (!SR) {
         bigIcon.textContent = "⌨️";
@@ -427,7 +519,7 @@
         if (finalText) {
           const text = finalText; finalText = "";
           setStage("thinking");
-          try { await sendText(text); }
+          try { await sendText(text, null); }
           catch (err) { toast(err.message); setStage("listening"); scheduleListen(); }
         } else {
           setStage("listening");
@@ -441,12 +533,41 @@
       if (!callActive) return;
       setStage("listening");
       setTimeout(() => {
-        if (callActive && recognition && recognition.state !== "running") {
+        if (!callActive) return;
+        if (window.__azureOn) {
+          startRecordListen();
+        } else if (recognition && recognition.state !== "running") {
           try { recognition.start(); } catch (e) {}
         }
       }, 450);
     }
     window.__scheduleListen = scheduleListen;
+
+    function setStage(name) {
+      stage.setAttribute("data-stage", name);
+      if (name === "idle") {
+        bigIcon.textContent = "🎙️";
+        stageText.textContent = "点这里开始对话";
+        stageTip.textContent = "AI 老师说完后,你直接开口说英语";
+        stageActions.style.display = "none";
+      } else if (name === "listening") {
+        bigIcon.textContent = "🎤";
+        stageText.textContent = "正在听你说…";
+        stageTip.textContent = "说完停顿一下,AI 老师会自动接话";
+        stageActions.style.display = "flex";
+      } else if (name === "thinking") {
+        bigIcon.textContent = "⏳";
+        stageText.textContent = "AI 老师思考中…";
+        stageTip.textContent = "稍等一下,看老师怎么回应";
+        stageActions.style.display = "flex";
+      } else if (name === "done") {
+        bigIcon.textContent = "🎉";
+        stageText.textContent = "完成啦!";
+        stageTip.textContent = "正在准备练习总结…";
+        stageActions.style.display = "none";
+      }
+    }
+    window.__setStage = setStage;
   }
 
   function expectedSentence() {
@@ -459,22 +580,24 @@
 
   async function sendAudio(blob) {
     const fd = new FormData();
-    fd.append("audio", blob, "speech.webm");
+    fd.append("audio", blob, "speech.wav");
     fd.append("expected", expectedSentence());
-    try {
-      const r = await api("/api/recognize", { method: "POST", body: fd });
-      await sendText(r.text);
-    } catch (e) { toast(e.message); }
+    const r = await api("/api/recognize", { method: "POST", body: fd });
+    const text = (r.text || "").trim();
+    if (!text) { toast("没听清,再说一次好吗?"); return false; }
+    await sendText(text, r.feedback || null);
+    return true;
   }
 
-  async function sendText(text) {
+  async function sendText(text, feedback) {
     if (!text || !session) return;
-    addStudentMessage(text, null);
+    addStudentMessage(text, feedback);
     setStage("thinking");
     try {
-      const r = await postJSON("/api/chat/reply", { session, text });
+      const r = await postJSON("/api/chat/reply", { session, text, words: feedback ? feedback.words : undefined });
       session = r.session;
-      if (r.feedback) {
+      if (r.feedback && !feedback) {
+        // 打字链路没有真实词评,这里补插后端返回的逐词结果
         const lastMsg = [...$("#thread").querySelectorAll(".msg.student")].pop();
         const words = (r.feedback.words || []).map((w) =>
           `<span class="word ${w.label}" title="得分 ${w.score}" onclick="speak('${esc(w.word)}')">${esc(w.word)}</span>`).join("");
