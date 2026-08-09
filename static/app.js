@@ -279,12 +279,13 @@
 
   function updateSegment(segment) {
     if (!segment) return;
-    const seg = (course.segments || []).find((s) => s.code === segment.code);
+    const code = typeof segment === "string" ? segment : segment.code;
+    const seg = (course.segments || []).find((s) => s.code === code);
     if (seg) {
-      $("#segName").textContent = seg.name_zh || segment.code;
-      $("#segMeta").textContent = `${segment.code} · ${seg.minutes} 分钟`;
-      $("#segIcon").textContent = segIcon(segment.code);
-    } else if (segment.code === "REVIEW") {
+      $("#segName").textContent = seg.name_zh || code;
+      $("#segMeta").textContent = `${code} · ${seg.minutes} 分钟`;
+      $("#segIcon").textContent = segIcon(code);
+    } else if (code === "REVIEW") {
       $("#segName").textContent = "复习往期易错点";
       $("#segMeta").textContent = "REVIEW · 巩固练习";
       $("#segIcon").textContent = "🔁";
@@ -453,7 +454,7 @@
         typeBar.className = "glass speak-bar";
         typeBar.id = "typeBar";
         typeBar.innerHTML = `
-          <input type="text" id="typeInput" placeholder="悦琳说的话(英文),回车发送…" style="flex:1;font-size:16px">
+          <input type="text" id="typeInput" placeholder="可以用英文或中文提问/回答,回车发送…" style="flex:1;font-size:16px">
           <button class="btn btn-primary" id="typeSend">发送</button>`;
         stage.parentNode.insertBefore(typeBar, stage.nextSibling);
         typeInput = typeBar.querySelector("#typeInput");
@@ -461,7 +462,11 @@
         typeSend.onclick = () => {
           const v = (typeInput.value || "").trim();
           typeInput.value = "";
-          if (v) { stopCall(); sendText(v, null); }
+          if (v) {
+            typeBar.style.display = "none";
+            stopCall();
+            sendText(v, { inputMode: "typed" });
+          }
         };
         typeInput.addEventListener("keydown", (e) => { if (e.key === "Enter") typeSend.click(); });
       }
@@ -581,7 +586,7 @@
         if (finalText) {
           const text = finalText; finalText = "";
           setStage("thinking");
-          try { await sendText(text, null); }
+          try { await sendText(text, { inputMode: "audio" }); }
           catch (err) { toast(err.message); setStage("idle"); }
         } else {
           toast("没听到,再点一下重新说");
@@ -603,21 +608,30 @@
     const stageText = $("#stageText");
     const stageTip = $("#stageTip");
     const stageActions = $("#stageActions");
+    const typeBtn = $("#typeBtn");
+    const endBtn = $("#endBtn");
     if (name === "idle") {
       bigIcon.textContent = "🎙️";
       stageText.textContent = "点一下开始说";
-      stageTip.textContent = "说完再点一下按钮(或按空格)结束";
-      stageActions.style.display = "none";
+      const mode = session?.pending?.expected_mode || "open_answer";
+      stageTip.textContent = mode === "repeat"
+        ? "跟着老师读这一句 · 本轮会做发音反馈"
+        : "回答老师就好,不用照着老师说 · 有问题也可以直接问";
+      stageActions.style.display = "flex";
+      if (typeBtn) typeBtn.style.display = "inline-flex";
+      if (endBtn) endBtn.style.display = "none";
     } else if (name === "listening") {
       bigIcon.textContent = "🎤";
       stageText.textContent = "正在听你说…";
       stageTip.textContent = "说完再点一下按钮(或按空格)结束";
       stageActions.style.display = "flex";
+      if (typeBtn) typeBtn.style.display = "none";
+      if (endBtn) endBtn.style.display = "inline-flex";
     } else if (name === "thinking") {
       bigIcon.textContent = "⏳";
       stageText.textContent = "AI 老师思考中…";
       stageTip.textContent = "稍等一下,看老师怎么回应";
-      stageActions.style.display = "flex";
+      stageActions.style.display = "none";
     } else if (name === "done") {
       bigIcon.textContent = "🎉";
       stageText.textContent = "完成啦!";
@@ -627,17 +641,13 @@
   }
 
   function expectedSentence() {
-    if (!course || !course.segments) return "";
-    const seg = course.segments[Math.min(session?.segment_idx ?? 0, course.segments.length - 1)];
-    if (!seg) return "";
-    const b = (seg?.dialogue || []).find(([r]) => r === "B");
-    return (b && b[1]) || (seg?.patterns || [])[0] || "";
+    return session?.pending?.target_text || "";
   }
 
   async function sendAudio(blob) {
     const fd = new FormData();
     fd.append("audio", blob, "speech.wav");
-    fd.append("expected", expectedSentence());
+    fd.append("session_id", session?.id || "");
     const r = await api("/api/recognize", { method: "POST", body: fd });
     const text = (r.text || "").trim();
     if (!text) {
@@ -645,33 +655,41 @@
       setStage("idle");
       return false;
     }
-    await sendText(text, r.feedback || null);
+    await sendText(text, { inputMode: "audio", audioId: r.audio_id });
     return true;
   }
 
-  async function sendText(text, feedback) {
+  async function sendText(text, options = {}) {
     if (!text || !session) return;
-    addStudentMessage(text, feedback);
+    addStudentMessage(text, null);
     setStage("thinking");
     try {
-      const r = await postJSON("/api/chat/reply", { session, text, words: feedback ? feedback.words : undefined });
+      const r = await postJSON("/api/chat/reply", {
+        session_id: session.id,
+        text,
+        input_mode: options.inputMode || "typed",
+        audio_id: options.audioId,
+      });
       session = r.session;
-      if (r.feedback && !feedback) {
-        // 打字链路没有真实词评,这里补插后端返回的逐词结果
+      if (r.pronunciation) {
+        // 只有明确的跟读音频回合才显示逐词发音反馈
         const lastMsg = [...$("#thread").querySelectorAll(".msg.student")].pop();
-        const words = (r.feedback.words || []).map((w) =>
-          `<span class="word ${w.label}" title="得分 ${w.score}" onclick="speak('${esc(w.word)}')">${esc(w.word)}</span>`).join("");
+        const words = (r.pronunciation.words || []).map((w) =>
+          `<span class="word ${w.label}" title="得分 ${w.score}">${esc(w.word)}</span>`).join("");
         if (lastMsg) lastMsg.querySelector(".bubble").insertAdjacentHTML("beforeend", `<div class="word-feedback">${words}</div>`);
+        showPronunciationCard(r.pronunciation);
       }
-      // 中文引导回合:AI 已用中文回应,不再额外评分/评级
-      if (!r.guide_zh) {
-        const encourage = r.encouragement || (r.grade ? encourageFor(r.grade) : "👍 收到!");
-        appendEncourage(encourage);
-        if (r.grade) showGradeCard(r.grade, r.segment_name);
+      // A/B/C/D 只在整个环节结束时展示,与发音分完全分开
+      if (r.segment_grade) {
+        appendEncourage(r.encouragement || encourageFor(r.segment_grade));
+        showGradeCard(r.segment_grade, r.segment_name);
       }
       renderSegTrack(session.segment_idx);
-      updateSegment(r.ai_message.segment);
-      addAIMessage(r.ai_message.text, r.ai_message.segment, r.ai_message.role);
+      const nextCode = session?.pending?.segment_code || r.ai_message.segment;
+      updateSegment(nextCode);
+      const nextSegment = (course.segments || []).find((s) => s.code === nextCode)
+        || (nextCode === "REVIEW" ? { code: "REVIEW", name_zh: "往期易错点", minutes: 0 } : null);
+      addAIMessage(r.ai_message.text, nextSegment, r.ai_message.role);
       if (session.done) {
         setStage("done");
         setTimeout(() => finishSession(), 2500);
@@ -705,10 +723,10 @@
   function showGradeCard(grade, name) {
     const thread = $("#thread");
     const reason = {
-      A: "发音和节奏都很棒",
-      B: "整体不错,继续保持",
-      C: "有几个词需要再练练",
-      D: "这一段有点难,慢慢来",
+      A: "独立完成,没有使用提示",
+      B: "在关键词提示后完成",
+      C: "在老师示范或跟读后完成",
+      D: "本次暂未完成或选择跳过",
     }[grade] || "";
     const div = document.createElement("div");
     div.className = `grade-card grade-${grade}`;
@@ -725,10 +743,30 @@
     thread.scrollTop = thread.scrollHeight;
   }
 
+  function showPronunciationCard(pronunciation) {
+    const thread = $("#thread");
+    const score = Math.round(pronunciation.score ?? pronunciation.accuracy ?? 0);
+    const weak = pronunciation.weak_words || [];
+    const detail = [
+      ["准确", pronunciation.accuracy],
+      ["流利", pronunciation.fluency],
+      ["完整", pronunciation.completeness],
+      ["语调", pronunciation.prosody],
+    ].filter(([, value]) => value !== null && value !== undefined);
+    const div = document.createElement("div");
+    div.className = "pronunciation-card";
+    div.innerHTML = `
+      <div class="pronunciation-main"><span>🌟 跟读发音</span><strong>${score}</strong></div>
+      <div class="pronunciation-metrics">${detail.map(([label, value]) => `<span>${label} ${Math.round(value)}</span>`).join("")}</div>
+      ${weak.length ? `<div class="pronunciation-weak">再注意: ${weak.slice(0, 2).map(esc).join("、")}</div>` : ""}`;
+    thread.appendChild(div);
+    thread.scrollTop = thread.scrollHeight;
+  }
+
   async function finishSession() {
     try {
       const durationMin = sessionStart ? Math.round((Date.now() - sessionStart) / 60000) : 0;
-      const r = await postJSON("/api/summary", { session, duration_min: Math.max(1, durationMin) });
+      const r = await postJSON("/api/summary", { session_id: session.id, duration_min: Math.max(1, durationMin) });
       session = null;
       location.hash = "/learn/done";
     } catch (e) { toast(e.message); }

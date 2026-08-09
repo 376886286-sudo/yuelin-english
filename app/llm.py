@@ -7,6 +7,7 @@
 - 会话记录 / 复习计划按固定模板生成
 """
 
+import json
 import os
 import random
 
@@ -43,6 +44,37 @@ def _chat(system: str, user: str, max_tokens: int = 1200) -> str:
     )
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"].strip()
+
+
+def chat_json(system: str, user: str, max_tokens: int = 600) -> dict:
+    """Call DeepSeek JSON Output and return a decoded object.
+
+    Errors intentionally propagate so the dialogue layer can mark the turn as
+    degraded without advancing the pending lesson task by accident.
+    """
+    resp = httpx.post(
+        API_URL,
+        headers={"Authorization": f"Bearer {_key()}", "Content-Type": "application/json"},
+        json={
+            "model": MODEL,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "response_format": {"type": "json_object"},
+            "max_tokens": max_tokens,
+            "temperature": 0.2,
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+    content = resp.json()["choices"][0]["message"]["content"].strip()
+    if content.startswith("```"):
+        content = content.strip("`").removeprefix("json").strip()
+    data = json.loads(content)
+    if not isinstance(data, dict):
+        raise ValueError("DeepSeek JSON output must be an object")
+    return data
 
 
 def _has_chinese(text: str) -> bool:
@@ -231,7 +263,7 @@ def _review_reply(lesson, segment_idx, student_text, prev_exchanges, review_erro
 
 
 # ---------------------------------------------------------------- 记录与规划
-def generate_record(lesson: dict, exchanges: list, grades: dict) -> dict:
+def generate_record(lesson: dict, exchanges: list, grades: dict, activity_results: dict | None = None) -> dict:
     """生成跟读记录(替代豆包的手动记录,结构固定、不丢上下文)。"""
     seg_names = [s.get("name_zh", s.get("code", "")) for s in lesson.get("segments", [])]
     student_lines = [e["text"] for e in exchanges if e.get("role") == "student"]
@@ -239,10 +271,21 @@ def generate_record(lesson: dict, exchanges: list, grades: dict) -> dict:
     weak_lines = [
         e["text"] for e in exchanges
         if e.get("role") == "student" and any(
-            w.get("label") == "weak" for w in (e.get("feedback", {}) or {}).get("words", [])
+            w.get("label") == "weak" for w in (e.get("pronunciation", {}) or {}).get("words", [])
         )
     ]
     weak = grades.get("weak", [])
+    activity_results = activity_results or {}
+    support_grades = [result.get("grade") for result in activity_results.values()]
+    error_points = []
+    if weak:
+        error_points.append("发音需要关注:" + "、".join(weak[:4]))
+    if "B" in support_grades:
+        error_points.append("部分回答需要关键词提示,下次先留出独立思考时间")
+    if "C" in support_grades:
+        error_points.append("部分句子在示范跟读后完成,建议隔天再独立复述")
+    if "D" in support_grades:
+        error_points.append("有任务本次暂未完成,下次从该任务重新开始")
 
     record = {
         "course_id": lesson.get("id", ""),
@@ -251,17 +294,12 @@ def generate_record(lesson: dict, exchanges: list, grades: dict) -> dict:
         "student_lines": student_lines[:12],
         "weak_lines": weak_lines[:6],
         "summary": {
-            "error_points": [
-                "be 动词不能丢:单数 is / 复数 are",
-                "定冠词 the 不要省略",
-                "单词混淆注意区分(如 book/boat)",
-                "疑问句语序:Where + be + 主语",
-            ][: max(2, len(weak) % 4 + 2)],
+            "error_points": error_points,
             "strengths": f"完成 {len(student_lines)} 次开口,持续保持练习",
         },
         "review_plan": {
-            "day1": f"重练 {seg_names[0] if seg_names else '第一环节'} 的过关句型",
-            "day3": "完成一次整句跟读,注意语音点",
+            "day1": f"重练 {seg_names[0] if seg_names else '第一环节'} 的未独立完成任务",
+            "day3": "复述本次用过提示的句子" if any(g in support_grades for g in ("B", "C")) else "用自己的说法复述本次对话",
             "day7": "三段整合对话完整走一遍",
         },
         "closing": "You took your time and kept speaking. That is real progress.",

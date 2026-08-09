@@ -1,6 +1,6 @@
 # 悦琳英语口语陪练 · 网页版
 
-给女儿(悦琳)做的 AI 英语口语陪练网站。爸爸上传教案 → AI 按教案带读 → 自动生成跟读记录。
+给女儿(悦琳)做的 AI 英语口语陪练网站。爸爸上传教案 → AI 理解本轮是在回答、提问、求助还是跟读 → 按教案任务推进 → 自动生成练习记录。
 
 **技术路线**:国际版 Azure(识别 / 合成 / 发音评估)+ DeepSeek(教案解析 / 教师对话 / 记录 / 规划)
 **设计**:Apple 风格,双模式(学习 / 家长),详见 `英语口语陪练网站-设计规划.md`
@@ -12,7 +12,15 @@ pip install -r requirements.txt
 python server.py          # → http://localhost:8000
 ```
 
-无任何 API Key 时全链路 mock 可跑:教案解析(规则引擎)、教师对话(按教案推进)、发音评估(随机评分)、TTS(浏览器朗读)。
+无任何 API Key 时全链路 mock 可跑:教案解析(规则引擎)、教师对话(按任务推进)、跟读模拟评分、TTS(浏览器朗读)。
+
+### 测试
+
+```bash
+python -m unittest discover -v
+```
+
+回归用例覆盖开放回答、连续插话、中英文提问、求助提示、跟读评分、A/B/C/D、历史顺序和服务降级。
 
 ### 接入真实服务
 
@@ -37,8 +45,12 @@ python server.py          # → http://localhost:8000
 ```
 server.py            # FastAPI 主程序(全部 API)
 app/parser.py        # 教案解析(TXT / MD / DOCX / DOC / PDF / 图片)
-app/llm.py           # DeepSeek(有 Key 走真实,无 Key mock)
-app/azure_speech.py  # Azure 语音(识别/评估/合成,无 Key mock)
+app/lesson_engine.py # 教案 activity / pending task / 确定性推进
+app/turn_analyzer.py # DeepSeek 结构化意图与语义判断(规则降级)
+app/dialogue_manager.py # 插话恢复、历史、提示/示范与会话编排
+app/scoring.py       # 任务 A/B/C/D(与发音分独立)
+app/llm.py           # DeepSeek JSON Output / 总结
+app/azure_speech.py  # 双语 ASR / scripted 跟读评估 / TTS
 app/storage.py       # 本地 JSON 存储(课程/会话/设置/用量)
 static/              # 前端(单页应用,hash 路由)
 data/                # 运行时数据(courses / sessions / uploads)
@@ -52,8 +64,8 @@ config.json          # 学员信息 / 家长 PIN(默认 1234)
 ## 当前状态
 
 - [x] P0:双模式框架 / 教案上传解析(TXT+DOCX+图片)/ 课程库 / 学习会话
-- [x] P1:Azure 真实语音(ASR + TTS + 发音评估逐词),free-form 模式
-- [x] P2:DeepSeek 真实对话 / 跟读记录 / 复习计划(1-3-7天)
+- [x] P1:Azure 双语 ASR + TTS;仅 repeat 音频做 scripted 发音评估
+- [x] P2:DeepSeek 结构化 Turn Analyzer / 插话恢复 / 跟读记录 / 复习计划
 - [ ] P3:局域网部署 / README 完善 / Unit01·02 实测
 
 ## 其他电脑部署清单

@@ -1185,7 +1185,8 @@ input:focus-visible { box-shadow: var(--focus-ring); }
 .stage-text { font-size: 19px; font-weight: 700; letter-spacing: -0.3px; color: var(--text); }
 .stage-tip { font-size: var(--f-caption); color: var(--text-2); text-align: center; }
 .stage-actions { display: flex; gap: var(--s-1); }
-.speak-stage[data-stage="idle"] .stage-actions { display: none; }
+.speak-stage[data-stage="idle"] .stage-actions { display: flex; }
+.speak-stage[data-stage="idle"] #endBtn { display: none; }
 .speak-stage[data-stage="done"] .stage-actions { display: none; }
 
 /* AI 气泡翻译 */
@@ -1276,6 +1277,31 @@ input:focus-visible { box-shadow: var(--focus-ring); }
 .grade-card .grade-label { font-size: var(--f-caption); color: var(--text-2); }
 .grade-card .grade-name { font-size: 18px; font-weight: 700; letter-spacing: -0.3px; margin-top: 2px; }
 .grade-card .grade-reason { font-size: 14px; color: var(--text-2); }
+
+/* 跟读发音卡:只在 repeat + audio 回合出现,与任务评级分离 */
+.pronunciation-card {
+  align-self: center;
+  width: 100%;
+  max-width: 480px;
+  padding: var(--s-3);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-radius: var(--radius-xl);
+  background: linear-gradient(135deg, var(--accent-bg), var(--surface));
+  box-shadow: var(--shadow-sm);
+  animation: fadeIn 0.35s var(--ease);
+}
+
+.pronunciation-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  font-weight: 700;
+}
+
+.pronunciation-main strong { font-size: 28px; color: var(--accent); }
+.pronunciation-metrics { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 8px; color: var(--text-2); font-size: 13px; }
+.pronunciation-weak { margin-top: 8px; color: var(--weak); font-size: 14px; font-weight: 600; }
 
 /* ============================================================
    PIN 锁定倒计时环
