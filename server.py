@@ -163,11 +163,22 @@ async def recognize(audio: UploadFile | None = File(None), expected: str = Form(
 
 @app.post("/api/tts")
 def tts(payload: dict):
-    """AI 文本合成语音。真实模式返回 mp3;失败/mock 返回 browser 标记由前端兜底。"""
+    """AI 文本合成语音(带说话风格)。真实模式返回 mp3;失败/mock 返回 browser 标记由前端兜底。
+
+    可选传 style(friendly/cheerful/hopeful/chat/excited/assistant)、voice(音色白名单)、
+    demo(跟读示范句变调);style/voice 不传则后端自动处理。
+    """
     text = (payload.get("text") or "").strip()
     if not text:
         return JSONResponse({"ok": False, "error": "缺少文本"}, status_code=400)
-    result = azure_speech.tts(text)
+    style = payload.get("style")
+    voice = payload.get("voice")
+    result = azure_speech.tts(
+        text,
+        voice=voice if isinstance(voice, str) else "",
+        style=style if isinstance(style, str) else None,
+        demo=bool(payload.get("demo")),
+    )
     if result.get("mode") == "azure":
         storage.add_usage(tts_chars=len(text))
         return Response(content=result["audio"], media_type="audio/mpeg")
@@ -205,7 +216,7 @@ def chat_reply(payload: dict):
     segment_idx = session.get("segment_idx", 0)
     seg_key = course["segments"][segment_idx]["code"] if segment_idx < total else "REVIEW"
 
-    words = payload.get("words") or azure_speech.pronunciation(student_text)
+    words = payload.get("words") or ([] if llm._has_chinese(student_text) else azure_speech.pronunciation(student_text))
     feedback = {
         "words": words,
         "overall": round(sum(w["score"] for w in words) / len(words)) if words else 0,
@@ -214,15 +225,20 @@ def chat_reply(payload: dict):
 
     ai = llm.teacher_reply(ctx, segment_idx, student_text, session.get("exchanges", []))
     new_segment_idx = segment_idx + 1 if ai.get("next_segment") else segment_idx
-    grade = _mock_grade(feedback)
+    guide_zh = bool(ai.get("guide_zh"))
+    # 中文引导回合:不评级、不占环节进度
+    grade = None if guide_zh else _mock_grade(feedback)
 
     session["exchanges"].append({"role": "ai", "text": ai["text"]})
+    # 中文引导回合不计入环节完成进度(孩子仍需说英文目标句)
+    stu_seg_idx = -1 if guide_zh else segment_idx
     session["exchanges"].append({
         "role": "student", "text": student_text, "feedback": feedback,
-        "segment_idx": segment_idx,
+        "segment_idx": stu_seg_idx,
     })
     session["segment_idx"] = new_segment_idx
-    session["grades"]["segments"][seg_key] = grade
+    if grade is not None:
+        session["grades"]["segments"][seg_key] = grade
     session["done"] = bool(ai.get("done"))
     seg_name = ""
     if segment_idx < total:
@@ -236,7 +252,8 @@ def chat_reply(payload: dict):
         "feedback": feedback,
         "grade": grade,
         "segment_name": seg_name,
-        "encouragement": _encouragement(grade),
+        "encouragement": None if guide_zh else _encouragement(grade),
+        "guide_zh": guide_zh,
     }
 
 
@@ -312,6 +329,18 @@ def session_detail(session_id: str):
     return {"ok": True, "record": s}
 
 
+@app.post("/api/translate")
+def translate(payload: dict):
+    """AI 消息 → 简单中文(供"看中文"按钮)。无 Key 时返回空串。"""
+    text = (payload.get("text") or "").strip()
+    if not text:
+        return JSONResponse({"ok": False, "error": "缺少文本"}, status_code=400)
+    if llm._has_chinese(text):
+        return {"ok": True, "zh": text}  # 本身是中文,原样返回
+    zh = llm.translate_zh(text)
+    return {"ok": True, "zh": zh}
+
+
 # ---------------------------------------------------------------- 设置 / 用量
 @app.get("/api/config")
 def api_config():
@@ -321,12 +350,14 @@ def api_config():
         "mock": not (llm.enabled() or azure_speech.enabled()),
         "deepseek": llm.enabled(),
         "azure": azure_speech.enabled(),
+        "tts_voice": azure_speech.tts_voice(),
+        "tts_voice_options": azure_speech.TTS_VOICE_OPTIONS,
     }
 
 
 @app.post("/api/config/keys")
 def save_keys(payload: dict):
-    """保存 Key 到 .env(本地)。"""
+    """保存 Key / 音色到 .env(本地)。"""
     lines = []
     env_file = ROOT / ".env"
     env = {}
@@ -338,6 +369,9 @@ def save_keys(payload: dict):
     env["DEEPSEEK_API_KEY"] = payload.get("deepseek_key", env.get("DEEPSEEK_API_KEY", ""))
     env["AZURE_SPEECH_KEY"] = payload.get("azure_key", env.get("AZURE_SPEECH_KEY", ""))
     env["AZURE_SPEECH_REGION"] = payload.get("azure_region", env.get("AZURE_SPEECH_REGION", "eastasia"))
+    voice = payload.get("tts_voice", "")
+    if voice in azure_speech.TTS_VOICE_OPTIONS:
+        env["TTS_VOICE"] = voice
     for k, v in env.items():
         lines.append(f"{k}={v}")
     env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")

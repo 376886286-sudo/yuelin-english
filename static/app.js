@@ -27,13 +27,16 @@
     toastTimer = setTimeout(() => toastEl.classList.remove("show"), 2200);
   }
 
-  function speak(text, onEnd) {
+  function speak(text, onEnd, style, demo) {
     if (!text) { if (onEnd) setTimeout(onEnd, 0); return; }
     if (window.__azureOn) {
+      const body = { text };
+      if (style) body.style = style;
+      if (demo) body.demo = true;
       fetch("/api/tts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify(body),
       }).then((res) => {
         if (res.ok && (res.headers.get("content-type") || "").includes("audio")) {
           return res.blob().then((blob) => {
@@ -66,7 +69,7 @@
   let session = null;      // 后端会话
   let course = null;       // 当前课程
   let segTrack = [];       // 环节代号列表
-  let callActive = false;  // 自动通话模式是否开启
+  let callActive = false;  // 本回合录音/识别是否进行中(单击开始,再单击结束)
   let sessionStart = 0;    // 会话开始时间戳(ms)
 
   /* ---------------- 路由 ---------------- */
@@ -233,8 +236,8 @@
             </button>
             <div class="stage-pulse" id="stagePulse"></div>
           </div>
-          <div class="stage-text" id="stageText">点这里开始对话</div>
-          <div class="stage-tip" id="stageTip">AI 老师说完后,你直接开口说英语</div>
+          <div class="stage-text" id="stageText">点一下开始说</div>
+          <div class="stage-tip" id="stageTip">AI 老师说完后,点一下按钮开口说,说完再点一下结束(或按空格)</div>
           <div class="stage-actions" id="stageActions">
             <button class="btn-ghost" id="typeBtn">⌨️ 打字</button>
             <button class="btn btn-danger" id="endBtn">结束</button>
@@ -298,8 +301,9 @@
       `<div class="seg-dot ${i < idx ? "done" : i === idx ? "active" : ""}" title="${esc(code)}"></div>`).join("");
   }
 
-  function addAIMessage(text, segment) {
+  function addAIMessage(text, segment, role) {
     const thread = $("#thread");
+    const demo = role === "demo"; // 跟读示范句 → 变调音色(像小朋友示范)
     let segBanner = "";
     if (segment && segment.code === "REVIEW") {
       segBanner = `<div class="seg-banner">复习环节 · 往期易错点</div>`;
@@ -309,7 +313,7 @@
     const div = document.createElement("div");
     div.className = "msg ai";
     div.innerHTML = `
-      <div class="avatar">🤖</div>
+      <div class="avatar">${demo ? "🗣️" : "🤖"}</div>
       <div class="bubble">
         ${segBanner}
         <div class="txt">${esc(text)}</div>
@@ -318,20 +322,33 @@
         <div class="actions"><button class="replay">🔊 再听一遍</button></div>
       </div>`;
     thread.appendChild(div);
-    $(`.replay`, div).onclick = () => speak(text, () => {});
+    $(`.replay`, div).onclick = () => speak(text, () => {}, undefined, demo);
     const trBtn = $(`.bubble-translate`, div);
     const trBox = $(`.bubble-zh`, div);
-    trBtn.onclick = () => {
+    trBtn.onclick = async () => {
       const show = trBox.hidden;
       trBox.hidden = !show;
       trBtn.querySelector(".tr-text").textContent = show ? "收起" : "看中文";
-      if (show && !trBox.textContent) trBox.textContent = "（中文翻译将在开启 DeepSeek 后自动生成）";
+      if (show && !trBox.textContent) {
+        const cache = (window.__trCache = window.__trCache || {});
+        if (cache[text]) {
+          trBox.textContent = cache[text];
+        } else if (/[\u4e00-\u9fff]/.test(text)) {
+          trBox.textContent = text; // 本身是中文
+        } else {
+          trBox.textContent = "翻译中…";
+          try {
+            const r = await postJSON("/api/translate", { text });
+            if (r.zh) { trBox.textContent = r.zh; cache[text] = r.zh; }
+            else trBox.textContent = "（需要配置 DeepSeek Key 才能翻译）";
+          } catch (e) { trBox.textContent = "翻译失败,稍后再试"; }
+        }
+      }
     };
     speak(text, () => {
-      if (callActive && session && !session.done && window.__scheduleListen) {
-        window.__scheduleListen();
-      }
-    });
+      // AI 播完后回到待命:等孩子单击按钮(或按空格)开口,不再自动开麦
+      if (session && !session.done) setStage("idle");
+    }, undefined, demo);
     thread.scrollTop = thread.scrollHeight;
   }
 
@@ -368,20 +385,65 @@
     let recorder = null;     // 录音管理器(Azure 真实链路)
     let finalText = "";
     let handled = false;
+    let wsTimer = null;      // Web Speech 超时防呆
 
     function stopCall() {
       callActive = false;
+      clearTimeout(wsTimer);
       if (recognition) { try { recognition.stop(); } catch (e) {} }
       if (recorder) { stopRecorder(recorder); recorder = null; }
     }
 
-    bigBtn.onclick = () => {
-      if (callActive) return;
-      callActive = true;
+    /* ---- 单击(或空格)切换:开始说话 ↔ 结束说话 ---- */
+    function toggleSpeak() {
+      if (!callActive) {
+        callActive = true;
+        if (!initRecognition()) { callActive = false; return; }
+        beginListen();
+      } else {
+        endListen();
+      }
+    }
+
+    function beginListen() {
+      handled = false;
       setStage("listening");
-      if (!initRecognition()) return;
-      scheduleListen();
-    };
+      if (window.__azureOn) {
+        startRecordListen();
+      } else if (recognition) {
+        finalText = "";
+        try { recognition.start(); } catch (e) {}
+        // 防呆:15 秒没结束自动提交(正常是孩子再点一下结束)
+        clearTimeout(wsTimer);
+        wsTimer = setTimeout(() => { if (callActive) endListen(); }, 15000);
+      }
+    }
+
+    function endListen() {
+      if (!callActive) return;
+      if (window.__azureOn) {
+        if (recorder) { finishRecord(recorder); }   // 再点一下 → 提交录音
+      } else if (recognition) {
+        clearTimeout(wsTimer);
+        if (recognition.state === "running") { try { recognition.stop(); } catch (e) {} } // onend 里提交
+        else { callActive = false; setStage("idle"); }
+      }
+    }
+
+    /* ---- 空格键 = 单击麦克风(输入框打字时除外) ---- */
+    function onGlobalKey(e) {
+      if (e.code !== "Space" || e.repeat) return;
+      const t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      if (!document.getElementById("speakStage")) return;
+      if (typeBar && typeBar.style.display === "flex") return;
+      e.preventDefault(); // 阻止页面滚动 & 按钮聚焦时的默认点击(避免双击)
+      toggleSpeak();
+    }
+    window.removeEventListener("keydown", onGlobalKey);
+    window.addEventListener("keydown", onGlobalKey);
+
+    bigBtn.onclick = () => { toggleSpeak(); };
 
     endBtn.onclick = () => { stopCall(); finishSession(); };
 
@@ -430,26 +492,17 @@
         const chunks = [];
         proc.onaudioprocess = (e) => { chunks.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
         const gain = ctx.createGain(); gain.gain.value = 0; // 防回声:录音不进扬声器
-        const analyser = ctx.createAnalyser(); analyser.fftSize = 1024;
         source.connect(proc); proc.connect(gain); gain.connect(ctx.destination);
-        source.connect(analyser);
-        const level = new Uint8Array(analyser.fftSize);
-        let silenceMs = 0;
-        const rec = { stream, ctx, source, proc, gain, analyser, chunks, stopped: false };
+        // 部分浏览器会忽略 sampleRate 构造参数(如 Safari→44100/48000),必须用实际采样率写 WAV 头,
+        // 否则音频变速变形、Azure 识别为空
+        const rec = { stream, ctx, source, proc, gain, chunks, sampleRate: ctx.sampleRate || 16000, stopped: false };
         recorder = rec;
-        // 静音 1.6 秒 = 说完,自动结束(替代 Web Speech 的自动 end)
-        rec.silTimer = setInterval(() => {
-          analyser.getByteTimeDomainData(level);
-          let max = 0;
-          for (let i = 0; i < level.length; i++) { const v = Math.abs(level[i] - 128); if (v > max) max = v; }
-          if (max < 12) { silenceMs += 200; if (silenceMs >= 1600) finishRecord(rec); }
-          else { silenceMs = 0; }
-        }, 200);
-        // 单句硬上限 12 秒
-        rec.hardTimer = setTimeout(() => finishRecord(rec), 12000);
+        // 防呆:单句硬上限 15 秒(正常由孩子再点一下结束)
+        rec.hardTimer = setTimeout(() => { if (recorder === rec) finishRecord(rec); }, 15000);
       }).catch(() => {
         toast("麦克风不可用,请用打字输入");
-        setStage("listening");
+        callActive = false;
+        setStage("idle");
       });
     }
 
@@ -457,12 +510,13 @@
       if (!rec || rec.stopped) return;
       rec.stopped = true;
       clearInterval(rec.silTimer); clearTimeout(rec.hardTimer);
-      try { rec.source.disconnect(); rec.proc.disconnect(); rec.gain.disconnect(); rec.analyser.disconnect(); } catch (e) {}
+      try { rec.source.disconnect(); rec.proc.disconnect(); rec.gain.disconnect(); } catch (e) {}
       rec.stream.getTracks().forEach((t) => t.stop());
       try { rec.ctx.close(); } catch (e) {}
     }
 
-    function wavBlob(chunks) {
+    function wavBlob(chunks, sampleRate) {
+      const rate = sampleRate || 16000;
       let len = 0;
       chunks.forEach((c) => { len += c.length; });
       const pcm = new Int16Array(len);
@@ -473,7 +527,7 @@
       const wstr = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
       wstr(0, "RIFF"); dv.setUint32(4, 36 + pcm.length * 2, true); wstr(8, "WAVE");
       wstr(12, "fmt "); dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
-      dv.setUint32(24, 16000, true); dv.setUint32(28, 32000, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+      dv.setUint32(24, rate, true); dv.setUint32(28, rate * 2, true); dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
       wstr(36, "data"); dv.setUint32(40, pcm.length * 2, true);
       new Int16Array(ab, 44).set(pcm);
       return new Blob([ab], { type: "audio/wav" });
@@ -484,12 +538,16 @@
       if (recorder === rec) recorder = null;
       if (!callActive || handled) return;
       handled = true;
-      const blob = wavBlob(rec.chunks);
-      if (blob.size < 2000) { // 太短 = 没说,重新听
-        setStage("listening"); scheduleListen(); return;
+      const blob = wavBlob(rec.chunks, rec.sampleRate);
+      if (blob.size < 2000) { // 太短 = 没说,回到待命等孩子再点
+        toast("太短啦,再点一下重新说");
+        callActive = false;
+        setStage("idle");
+        return;
       }
+      callActive = false;
       setStage("thinking");
-      sendAudio(blob).catch((err) => { toast(err.message); setStage("listening"); scheduleListen(); });
+      sendAudio(blob).catch((err) => { toast(err.message); setStage("idle"); });
     }
 
     /* ---- 兜底:浏览器 Web Speech 识别 ---- */
@@ -512,62 +570,60 @@
         setStage("listening");
       };
       recognition.onresult = (e) => { finalText = (e.results[0][0].transcript || "").trim(); };
-      recognition.onerror = () => { if (callActive && !handled) { handled = true; setStage("listening"); scheduleListen(); } };
+      recognition.onerror = () => {
+        if (callActive && !handled) { handled = true; callActive = false; setStage("idle"); }
+      };
       recognition.onend = async () => {
+        clearTimeout(wsTimer);
         if (!callActive || handled) return;
         handled = true;
+        callActive = false;
         if (finalText) {
           const text = finalText; finalText = "";
           setStage("thinking");
           try { await sendText(text, null); }
-          catch (err) { toast(err.message); setStage("listening"); scheduleListen(); }
+          catch (err) { toast(err.message); setStage("idle"); }
         } else {
-          setStage("listening");
-          scheduleListen();
+          toast("没听到,再点一下重新说");
+          setStage("idle");
         }
       };
       return true;
     }
 
-    function scheduleListen() {
-      if (!callActive) return;
-      setStage("listening");
-      setTimeout(() => {
-        if (!callActive) return;
-        if (window.__azureOn) {
-          startRecordListen();
-        } else if (recognition && recognition.state !== "running") {
-          try { recognition.start(); } catch (e) {}
-        }
-      }, 450);
-    }
-    window.__scheduleListen = scheduleListen;
+    window.__setStage = setStage; // 指向顶层 setStage(供外部/inline 使用)
+  }
 
-    function setStage(name) {
-      stage.setAttribute("data-stage", name);
-      if (name === "idle") {
-        bigIcon.textContent = "🎙️";
-        stageText.textContent = "点这里开始对话";
-        stageTip.textContent = "AI 老师说完后,你直接开口说英语";
-        stageActions.style.display = "none";
-      } else if (name === "listening") {
-        bigIcon.textContent = "🎤";
-        stageText.textContent = "正在听你说…";
-        stageTip.textContent = "说完停顿一下,AI 老师会自动接话";
-        stageActions.style.display = "flex";
-      } else if (name === "thinking") {
-        bigIcon.textContent = "⏳";
-        stageText.textContent = "AI 老师思考中…";
-        stageTip.textContent = "稍等一下,看老师怎么回应";
-        stageActions.style.display = "flex";
-      } else if (name === "done") {
-        bigIcon.textContent = "🎉";
-        stageText.textContent = "完成啦!";
-        stageTip.textContent = "正在准备练习总结…";
-        stageActions.style.display = "none";
-      }
+  /* 说话舞台状态切换(顶层函数,供 bindSpeak 内外共用;每次调用实时查询 DOM) */
+  function setStage(name) {
+    const stage = $("#speakStage");
+    if (!stage) return;
+    stage.setAttribute("data-stage", name);
+    const bigIcon = $("#bigMicIcon");
+    const stageText = $("#stageText");
+    const stageTip = $("#stageTip");
+    const stageActions = $("#stageActions");
+    if (name === "idle") {
+      bigIcon.textContent = "🎙️";
+      stageText.textContent = "点一下开始说";
+      stageTip.textContent = "说完再点一下按钮(或按空格)结束";
+      stageActions.style.display = "none";
+    } else if (name === "listening") {
+      bigIcon.textContent = "🎤";
+      stageText.textContent = "正在听你说…";
+      stageTip.textContent = "说完再点一下按钮(或按空格)结束";
+      stageActions.style.display = "flex";
+    } else if (name === "thinking") {
+      bigIcon.textContent = "⏳";
+      stageText.textContent = "AI 老师思考中…";
+      stageTip.textContent = "稍等一下,看老师怎么回应";
+      stageActions.style.display = "flex";
+    } else if (name === "done") {
+      bigIcon.textContent = "🎉";
+      stageText.textContent = "完成啦!";
+      stageTip.textContent = "正在准备练习总结…";
+      stageActions.style.display = "none";
     }
-    window.__setStage = setStage;
   }
 
   function expectedSentence() {
@@ -584,7 +640,11 @@
     fd.append("expected", expectedSentence());
     const r = await api("/api/recognize", { method: "POST", body: fd });
     const text = (r.text || "").trim();
-    if (!text) { toast("没听清,再说一次好吗?"); return false; }
+    if (!text) {
+      toast(r.error ? `语音识别出错:${r.error}` : "没听清,再点一下重新说");
+      setStage("idle");
+      return false;
+    }
     await sendText(text, r.feedback || null);
     return true;
   }
@@ -603,23 +663,23 @@
           `<span class="word ${w.label}" title="得分 ${w.score}" onclick="speak('${esc(w.word)}')">${esc(w.word)}</span>`).join("");
         if (lastMsg) lastMsg.querySelector(".bubble").insertAdjacentHTML("beforeend", `<div class="word-feedback">${words}</div>`);
       }
-      // 鼓励反馈
-      const encourage = r.encouragement || (r.grade ? encourageFor(r.grade) : "👍 收到!");
-      appendEncourage(encourage);
-      // 环节评级卡片(环节切换时)
-      if (r.grade) showGradeCard(r.grade, r.segment_name);
+      // 中文引导回合:AI 已用中文回应,不再额外评分/评级
+      if (!r.guide_zh) {
+        const encourage = r.encouragement || (r.grade ? encourageFor(r.grade) : "👍 收到!");
+        appendEncourage(encourage);
+        if (r.grade) showGradeCard(r.grade, r.segment_name);
+      }
       renderSegTrack(session.segment_idx);
       updateSegment(r.ai_message.segment);
-      addAIMessage(r.ai_message.text, r.ai_message.segment);
+      addAIMessage(r.ai_message.text, r.ai_message.segment, r.ai_message.role);
       if (session.done) {
         setStage("done");
         setTimeout(() => finishSession(), 2500);
-      } else {
-        setStage("listening");
       }
+      // 未结束时:AI 播完后由 addAIMessage 回调回到 idle,等孩子再点
     } catch (e) {
       toast(e.message);
-      setStage("listening");
+      setStage("idle");
     }
   }
 
@@ -1136,7 +1196,8 @@
           <div class="form-group"><label>DeepSeek API Key</label><input type="text" id="dk" placeholder="sk-..."></div>
           <div class="form-group"><label>Azure 语音 Key</label><input type="text" id="ak" placeholder="azure speech key"></div>
           <div class="form-group"><label>Azure 区域</label><input type="text" id="ar" placeholder="eastasia" value="eastasia"></div>
-          <button class="btn btn-primary" id="saveKeys">保存 Key</button>
+          <div class="form-group"><label>老师音色</label><select id="voiceSel" style="font-size:16px;padding:8px;border-radius:8px;border:1px solid #ddd;background:#fff"></select></div>
+          <button class="btn btn-primary" id="saveKeys">保存</button>
         </div>
       </div>
       <div class="section">
@@ -1150,6 +1211,10 @@
     bindParentNav();
     try {
       const cfg = await api("/api/config");
+      const voiceSel = $("#voiceSel");
+      const curVoice = cfg.tts_voice || "en-US-JennyNeural";
+      voiceSel.innerHTML = Object.entries(cfg.tts_voice_options || {}).map(([k, label]) =>
+        `<option value="${k}" ${k === curVoice ? "selected" : ""}>${esc(label)}</option>`).join("");
       $("#studentInfo").innerHTML = `
         <div class="row"><div class="main"><div class="t">${esc(cfg.student?.name || "悦琳")}</div><div class="d">${esc(cfg.student?.grade || "")} · ${esc(cfg.student?.level || "")}</div></div></div>
         <div class="row"><div class="main"><div class="t">服务状态</div><div class="d">DeepSeek: ${cfg.deepseek ? "已配置" : "mock"} · Azure: ${cfg.azure ? "已配置" : "mock"}</div></div></div>`;
@@ -1162,7 +1227,10 @@
     } catch (e) { toast(e.message); }
     $("#saveKeys").onclick = async () => {
       try {
-        await postJSON("/api/config/keys", { deepseek_key: $("#dk").value, azure_key: $("#ak").value, azure_region: $("#ar").value });
+        await postJSON("/api/config/keys", {
+          deepseek_key: $("#dk").value, azure_key: $("#ak").value, azure_region: $("#ar").value,
+          tts_voice: $("#voiceSel").value,
+        });
         toast("已保存,重启服务后生效");
       } catch (e) { toast(e.message); }
     };
