@@ -228,21 +228,30 @@
             <div class="seg-meta" id="segMeta"></div>
           </div>
         </div>
-        <div class="content" id="thread"></div>
-        <div class="speak-stage" id="speakStage" data-stage="idle">
-          <div class="stage-mic">
-            <button class="big-mic-btn" id="bigMicBtn" aria-label="开始说话">
-              <span class="big-mic-icon" id="bigMicIcon">🎙️</span>
-            </button>
-            <div class="stage-pulse" id="stagePulse"></div>
+        <main class="content" id="thread" aria-label="对话记录" aria-live="polite"></main>
+        <aside class="speak-stage" id="speakStage" data-stage="idle" aria-label="对话控制">
+          <div class="stage-heading">
+            <div>
+              <div class="stage-kicker">对话控制</div>
+              <div class="stage-heading-title">轮到你开口时，从这里操作</div>
+            </div>
+            <span class="stage-shortcut">Space</span>
           </div>
-          <div class="stage-text" id="stageText">点一下开始说</div>
-          <div class="stage-tip" id="stageTip">AI 老师说完后,点一下按钮开口说,说完再点一下结束(或按空格)</div>
+          <div class="stage-control">
+            <div class="stage-mic">
+              <button class="big-mic-btn" id="bigMicBtn" aria-label="开始说话">
+                <span class="big-mic-icon" id="bigMicIcon">🎙️</span>
+              </button>
+              <div class="stage-pulse" id="stagePulse"></div>
+            </div>
+            <div class="stage-text" id="stageText">点一下开始说</div>
+            <div class="stage-tip" id="stageTip">AI 老师说完后，点一下按钮开口说；说完再点一下结束（或按空格）</div>
+          </div>
           <div class="stage-actions" id="stageActions">
             <button class="btn-ghost" id="typeBtn">⌨️ 打字</button>
-            <button class="btn btn-danger" id="endBtn">结束</button>
+            <button class="btn btn-danger" id="endBtn">结束练习</button>
           </div>
-        </div>
+        </aside>
       </div>`;
     bindNav();
     try {
@@ -456,7 +465,7 @@
         typeBar.innerHTML = `
           <input type="text" id="typeInput" placeholder="可以用英文或中文提问/回答,回车发送…" style="flex:1;font-size:16px">
           <button class="btn btn-primary" id="typeSend">发送</button>`;
-        stage.parentNode.insertBefore(typeBar, stage.nextSibling);
+        stage.insertBefore(typeBar, stageActions);
         typeInput = typeBar.querySelector("#typeInput");
         typeSend = typeBar.querySelector("#typeSend");
         typeSend.onclick = () => {
@@ -619,7 +628,7 @@
         : "回答老师就好,不用照着老师说 · 有问题也可以直接问";
       stageActions.style.display = "flex";
       if (typeBtn) typeBtn.style.display = "inline-flex";
-      if (endBtn) endBtn.style.display = "none";
+      if (endBtn) endBtn.style.display = "inline-flex";
     } else if (name === "listening") {
       bigIcon.textContent = "🎤";
       stageText.textContent = "正在听你说…";
