@@ -51,7 +51,16 @@ config.json          # 学员信息 / 家长 PIN(默认 1234)
 
 ## 当前状态
 
-- [x] P0:双模式框架 / 教案上传解析(TXT+DOCX+图片)/ 课程库 / 学习会话(mock 链路)
-- [ ] P1:Azure 真实 Key 接入(ASR / TTS / 发音评估逐词)
-- [ ] P2:DeepSeek 真实记录 / 与 AI 调整教案 / 复习计划详情
-- [ ] P3:局域网部署 / 用量核对 / README 完善 / Unit01·02 实测
+- [x] P0:双模式框架 / 教案上传解析(TXT+DOCX+图片)/ 课程库 / 学习会话
+- [x] P1:Azure 真实语音(ASR + TTS + 发音评估逐词),free-form 模式
+- [x] P2:DeepSeek 真实对话 / 跟读记录 / 复习计划(1-3-7天)
+- [ ] P3:局域网部署 / README 完善 / Unit01·02 实测
+
+## 其他电脑部署清单
+
+1. `git clone` + `cd` 进入目录
+2. 创建虚拟环境: `python -m venv venv && venv\Scripts\activate` (或 `source venv/bin/activate`)
+3. 安装依赖: `pip install -r requirements.txt`
+4. 复制 API Key: `cp .env.example .env`, 编辑填入 DeepSeek + Azure Key
+5. (可选, Windows 专用) 解析 .doc 需要本机安装 Word 或 WPS, 否则只支持 .txt/.md/.docx/.pdf
+6. 启动: `python server.py`
