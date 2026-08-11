@@ -13,7 +13,7 @@ class DialogueFlowTests(unittest.TestCase):
     def setUp(self):
         self.original_enabled = llm.enabled
         self.original_chat_json = llm.chat_json
-        self.original_pronunciation = server.azure_speech.pronunciation
+        self.original_assess_scripted = server.azure_speech.assess_scripted
         self.original_add_usage = server.storage.add_usage
         self.original_save_session = server.storage.save_session
         llm.enabled = lambda: False
@@ -26,7 +26,7 @@ class DialogueFlowTests(unittest.TestCase):
     def tearDown(self):
         llm.enabled = self.original_enabled
         llm.chat_json = self.original_chat_json
-        server.azure_speech.pronunciation = self.original_pronunciation
+        server.azure_speech.assess_scripted = self.original_assess_scripted
         server.storage.add_usage = self.original_add_usage
         server.storage.save_session = self.original_save_session
         server.ACTIVE_SESSIONS.clear()
@@ -116,7 +116,7 @@ class DialogueFlowTests(unittest.TestCase):
         self.reply(sid, "...")
         self.reply(sid, "...")
         server._AUDIO_CACHE["audio1"] = {"raw": b"x" * 2000, "created": 1, "session_id": sid}
-        server.azure_speech.pronunciation = lambda raw, target: {
+        server.azure_speech.assess_scripted = lambda raw, target: {
             "mode": "mock", "reference_text": target, "score": 90,
             "accuracy": 90, "fluency": 88, "completeness": 100,
             "prosody": 87, "words": [], "weak_words": [], "error": None,
@@ -135,7 +135,7 @@ class DialogueFlowTests(unittest.TestCase):
         self.reply(sid, "...")
         self.reply(sid, "...")
         server._AUDIO_CACHE["audio2"] = {"raw": b"x" * 2000, "created": 1, "session_id": sid}
-        server.azure_speech.pronunciation = lambda raw, target: {
+        server.azure_speech.assess_scripted = lambda raw, target: {
             "mode": "mock", "reference_text": target, "score": 72,
             "accuracy": 72, "fluency": 75, "completeness": 60,
             "prosody": 70, "words": [], "weak_words": ["name"], "error": None,
@@ -150,7 +150,7 @@ class DialogueFlowTests(unittest.TestCase):
         self.reply(sid, "...")
         self.reply(sid, "...")
         server._AUDIO_CACHE["audio-error"] = {"raw": b"x" * 2000, "created": 1, "session_id": sid}
-        server.azure_speech.pronunciation = lambda raw, target: {
+        server.azure_speech.assess_scripted = lambda raw, target: {
             "mode": "azure", "reference_text": target, "score": 0,
             "accuracy": 0, "fluency": 0, "completeness": 0,
             "prosody": None, "words": [], "weak_words": [], "error": "timeout",
@@ -187,8 +187,14 @@ class DialogueFlowTests(unittest.TestCase):
         sid, _ = self.start()
         self.reply(sid, "...")
         demo = self.reply(sid, "...")
-        self.assertEqual(demo["session"]["pending"]["expected_mode"], "repeat")
-        repeated = self.reply(sid, "My name is Yuelin.")
+        self.assertEqual(demo["session"]["pending"]["expected_action"], "repeat")
+        server._AUDIO_CACHE["audio-demo"] = {"raw": b"x" * 2000, "created": 1, "session_id": sid}
+        server.azure_speech.assess_scripted = lambda raw, target: {
+            "mode": "mock", "reference_text": target, "score": 90,
+            "accuracy": 90, "fluency": 90, "completeness": 100,
+            "prosody": 90, "words": [], "weak_words": [], "error": None,
+        }
+        repeated = self.reply(sid, "My name is Yuelin.", input_mode="audio", audio_id="audio-demo")
         self.assertEqual(repeated["turn"]["support_level"], "demo")
         result = self.reply(sid, "Nice to meet you, too.")
         self.assertEqual(result["segment_grade"], "C")
@@ -216,7 +222,52 @@ class DialogueFlowTests(unittest.TestCase):
         before = server.ACTIVE_SESSIONS[sid]["pending"]["id"]
         result = self.reply(sid, "What does worried mean?")
         self.assertEqual(result["session"]["pending"]["id"], before)
-        self.assertEqual(result["turn"]["task_action"], "pause_and_resume")
+        self.assertEqual(result["turn"]["task_action"], "answer_then_resume")
+        self.assertEqual(result["turn"]["resumed_task_id"], before)
+
+    def test_free_talk_is_acknowledged_then_resumes_without_progress(self):
+        sid, _ = self.start()
+        result = self.reply(sid, "I played with my friend yesterday.")
+        self.assertEqual(result["turn"]["intent"], "free_talk")
+        self.assertFalse(result["turn"]["progressed"])
+        self.assertEqual(result["session"]["pending"]["id"], "MEET_Q1")
+        self.assertEqual(result["turn"]["task_action"], "chat_then_resume")
+
+    def test_small_grammar_error_is_recast_without_blocking_speaking(self):
+        sid, _ = self.start()
+        result = self.reply(sid, "My name Yuelin.")
+        self.assertTrue(result["turn"]["progressed"])
+        self.assertEqual(result["turn"]["answer_quality"], "needs_recast")
+        self.assertEqual(result["turn"]["corrected_text"], "My name is Yuelin.")
+        self.assertEqual(result["session"]["coaching_notes"][0]["strategy"], "recast")
+
+    def test_question_during_repeat_preserves_repeat_task_without_score(self):
+        sid, _ = self.start()
+        self.reply(sid, "...")
+        demo = self.reply(sid, "...")
+        pending_id = demo["session"]["pending"]["id"]
+        result = self.reply(sid, "What does name mean?")
+        self.assertEqual(result["turn"]["intent"], "question")
+        self.assertEqual(result["session"]["pending"]["id"], pending_id)
+        self.assertEqual(result["session"]["expected_action"], "repeat")
+        self.assertIsNone(result["pronunciation"])
+
+    def test_typed_repeat_waits_for_real_audio(self):
+        sid, _ = self.start()
+        self.reply(sid, "...")
+        self.reply(sid, "...")
+        result = self.reply(sid, "My name is Mike.")
+        self.assertEqual(result["turn"]["task_action"], "await_audio_repeat")
+        self.assertFalse(result["turn"]["progressed"])
+        self.assertIsNone(result["pronunciation"])
+
+    def test_twenty_interruptions_never_lose_the_pending_task(self):
+        sid, _ = self.start()
+        for _ in range(20):
+            result = self.reply(sid, "What does name mean?")
+        self.assertEqual(result["session"]["pending"]["id"], "MEET_Q1")
+        self.assertEqual(result["session"]["segment_idx"], 0)
+        self.assertEqual(len(result["session"]["history"]), 41)
 
     def test_t17_mixed_language_answer_is_understood(self):
         sid, _ = self.start()

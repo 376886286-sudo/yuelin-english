@@ -238,6 +238,12 @@
             <span class="stage-shortcut">Space</span>
           </div>
           <div class="stage-control">
+            <div class="pending-task-card" id="pendingTaskCard" hidden>
+              <div class="pending-task-label">🗣️ 跟读练习</div>
+              <div class="pending-task-target" id="pendingTaskTarget"></div>
+              <button class="pending-task-replay" id="pendingTaskReplay">🔊 再听一遍</button>
+              <div class="pending-task-note">这一次会听你的发音</div>
+            </div>
             <div class="stage-mic">
               <button class="big-mic-btn" id="bigMicBtn" aria-label="开始说话">
                 <span class="big-mic-icon" id="bigMicIcon">🎙️</span>
@@ -281,7 +287,8 @@
         window.__azureOn = !!(st.azure && st.azure.enabled);
       } catch (e) { window.__azureOn = false; }
       bindSpeak();
-      addAIMessage(res.ai_message, res.segment);
+      renderPendingTask();
+      addAIMessage(res.ai_message, res.segment, session.expected_action === "repeat" ? "demo" : undefined);
       updateSegment(res.segment);
     } catch (e) { toast(e.message); }
   }
@@ -474,7 +481,7 @@
           if (v) {
             typeBar.style.display = "none";
             stopCall();
-            sendText(v, { inputMode: "typed" });
+            sendText(v);
           }
         };
         typeInput.addEventListener("keydown", (e) => { if (e.key === "Enter") typeSend.click(); });
@@ -595,7 +602,9 @@
         if (finalText) {
           const text = finalText; finalText = "";
           setStage("thinking");
-          try { await sendText(text, { inputMode: "audio" }); }
+          // Browser Speech provides text only, so it follows the text-turn path
+          // and never fabricates a pronunciation score.
+          try { await sendText(text); }
           catch (err) { toast(err.message); setStage("idle"); }
         } else {
           toast("没听到,再点一下重新说");
@@ -622,7 +631,7 @@
     if (name === "idle") {
       bigIcon.textContent = "🎙️";
       stageText.textContent = "点一下开始说";
-      const mode = session?.pending?.expected_mode || "open_answer";
+      const mode = session?.expected_action || session?.pending?.expected_action || "open_answer";
       stageTip.textContent = mode === "repeat"
         ? "跟着老师读这一句 · 本轮会做发音反馈"
         : "回答老师就好,不用照着老师说 · 有问题也可以直接问";
@@ -649,73 +658,83 @@
     }
   }
 
-  function expectedSentence() {
-    return session?.pending?.target_text || "";
+  function renderPendingTask() {
+    const card = $("#pendingTaskCard");
+    if (!card) return;
+    const action = session?.expected_action || session?.pending?.expected_action || "none";
+    const reference = session?.reference_text || session?.pending?.reference_text || "";
+    const visible = action === "repeat" && !!reference && !session?.done;
+    card.hidden = !visible;
+    if (!visible) return;
+    $("#pendingTaskTarget").textContent = reference;
+    $("#pendingTaskReplay").onclick = () => speak(reference, () => setStage("idle"), undefined, true);
   }
 
   async function sendAudio(blob) {
     const fd = new FormData();
     fd.append("audio", blob, "speech.wav");
     fd.append("session_id", session?.id || "");
-    const r = await api("/api/recognize", { method: "POST", body: fd });
-    const text = (r.text || "").trim();
-    if (!text) {
-      toast(r.error ? `语音识别出错:${r.error}` : "没听清,再点一下重新说");
+    try {
+      const r = await api("/api/turn/audio", { method: "POST", body: fd });
+      addStudentMessage(r.student_text, null);
+      applyTurnResponse(r);
+      return true;
+    } catch (e) {
+      toast(e.message);
       setStage("idle");
       return false;
     }
-    await sendText(text, { inputMode: "audio", audioId: r.audio_id });
-    return true;
   }
 
-  async function sendText(text, options = {}) {
+  async function sendText(text) {
     if (!text || !session) return;
     addStudentMessage(text, null);
     setStage("thinking");
     try {
-      const r = await postJSON("/api/chat/reply", {
+      const r = await postJSON("/api/turn/text", {
         session_id: session.id,
         text,
-        input_mode: options.inputMode || "typed",
-        audio_id: options.audioId,
       });
-      session = r.session;
-      if (r.pronunciation) {
-        // 只有明确的跟读音频回合才显示逐词发音反馈
-        const lastMsg = [...$("#thread").querySelectorAll(".msg.student")].pop();
-        const words = (r.pronunciation.words || []).map((w) =>
-          `<span class="word ${w.label}" title="得分 ${w.score}">${esc(w.word)}</span>`).join("");
-        if (lastMsg) lastMsg.querySelector(".bubble").insertAdjacentHTML("beforeend", `<div class="word-feedback">${words}</div>`);
-        showPronunciationCard(r.pronunciation);
-      }
-      // A/B/C/D 只在整个环节结束时展示,与发音分完全分开
-      if (r.segment_grade) {
-        appendEncourage(r.encouragement || encourageFor(r.segment_grade));
-        showGradeCard(r.segment_grade, r.segment_name);
-      }
-      renderSegTrack(session.segment_idx);
-      const nextCode = session?.pending?.segment_code || r.ai_message.segment;
-      updateSegment(nextCode);
-      const nextSegment = (course.segments || []).find((s) => s.code === nextCode)
-        || (nextCode === "REVIEW" ? { code: "REVIEW", name_zh: "往期易错点", minutes: 0 } : null);
-      addAIMessage(r.ai_message.text, nextSegment, r.ai_message.role);
-      if (session.done) {
-        setStage("done");
-        setTimeout(() => finishSession(), 2500);
-      }
-      // 未结束时:AI 播完后由 addAIMessage 回调回到 idle,等孩子再点
+      applyTurnResponse(r);
     } catch (e) {
       toast(e.message);
       setStage("idle");
     }
   }
 
+  function applyTurnResponse(r) {
+    session = r.session;
+    if (r.pronunciation) {
+      // 只有明确的跟读音频回合才出现发音反馈。
+      const lastMsg = [...$("#thread").querySelectorAll(".msg.student")].pop();
+      const words = (r.pronunciation.words || []).map((w) =>
+        `<span class="word ${w.label}">${esc(w.word)}</span>`).join("");
+      if (lastMsg && words) lastMsg.querySelector(".bubble").insertAdjacentHTML("beforeend", `<div class="word-feedback">${words}</div>`);
+      showPronunciationCard(r.pronunciation);
+    }
+    if (r.segment_grade) {
+      appendEncourage(r.encouragement || encourageFor(r.segment_grade));
+      showGradeCard(r.segment_grade, r.segment_name);
+    }
+    renderSegTrack(session.segment_idx);
+    renderPendingTask();
+    const nextCode = session?.pending?.segment_code || r.ai_message.segment;
+    updateSegment(nextCode);
+    const nextSegment = (course.segments || []).find((s) => s.code === nextCode)
+      || (nextCode === "REVIEW" ? { code: "REVIEW", name_zh: "往期易错点", minutes: 0 } : null);
+    addAIMessage(r.ai_message.text, nextSegment, r.ai_message.role);
+    if (session.done) {
+      setStage("done");
+      setTimeout(() => finishSession(), 2500);
+    }
+  }
+
   function encourageFor(grade) {
     const map = {
-      A: "🌟 完美!发音清晰又准确",
-      B: "👍 很棒!继续保持",
-      C: "💪 不错,再练一次会更好",
-      D: "🌱 没关系,多说就熟悉了",
+      A: "🌟 这一段独立完成啦!",
+      B: "👍 用一点提示就完成了!",
+      C: "💪 跟着示范完成了,很棒!",
+      D: "🌱 先放一放也没关系,下次再来!",
     };
     return map[grade] || "👍 收到!";
   }
@@ -756,18 +775,12 @@
     const thread = $("#thread");
     const score = Math.round(pronunciation.score ?? pronunciation.accuracy ?? 0);
     const weak = pronunciation.weak_words || [];
-    const detail = [
-      ["准确", pronunciation.accuracy],
-      ["流利", pronunciation.fluency],
-      ["完整", pronunciation.completeness],
-      ["语调", pronunciation.prosody],
-    ].filter(([, value]) => value !== null && value !== undefined);
     const div = document.createElement("div");
     div.className = "pronunciation-card";
     div.innerHTML = `
       <div class="pronunciation-main"><span>🌟 跟读发音</span><strong>${score}</strong></div>
-      <div class="pronunciation-metrics">${detail.map(([label, value]) => `<span>${label} ${Math.round(value)}</span>`).join("")}</div>
-      ${weak.length ? `<div class="pronunciation-weak">再注意: ${weak.slice(0, 2).map(esc).join("、")}</div>` : ""}`;
+      <div class="pronunciation-cheer">${score >= 85 ? "读得很自然,继续保持!" : "已经很接近了,再慢一点会更清楚。"}</div>
+      ${weak.length ? `<div class="pronunciation-weak">下次只注意一个词: ${esc(weak[0])}</div>` : ""}`;
     thread.appendChild(div);
     thread.scrollTop = thread.scrollHeight;
   }
@@ -1212,6 +1225,20 @@
       const { record } = await api(`/api/sessions/${id}`);
       const lines = (record.student_lines || []).map((l) => `<div class="row"><div class="main"><div class="t">${esc(l)}</div></div></div>`).join("");
       const weakLines = (record.weak_lines || []).map((l) => `<div class="row"><div class="main"><div class="t">${esc(l)}</div><div class="d">发音需加强,已进入易错点候选</div></div></div>`).join("");
+      const pronunciationResults = Object.values(record.raw?.activity_results || {}).filter((item) => item?.pronunciation);
+      const pronunciationDetails = pronunciationResults.map((item) => {
+        const p = item.pronunciation || {};
+        return `<div class="card parent-pron-card">
+          <div><strong>${esc(item.segment_code || item.activity_id || "跟读")}</strong><span>总分 ${Math.round(p.score ?? p.accuracy ?? 0)}</span></div>
+          <div class="parent-pron-metrics">
+            <span>准确 ${Math.round(p.accuracy ?? 0)}</span><span>流利 ${Math.round(p.fluency ?? 0)}</span>
+            <span>完整 ${Math.round(p.completeness ?? 0)}</span>${p.prosody == null ? "" : `<span>语调 ${Math.round(p.prosody)}</span>`}
+          </div>
+        </div>`;
+      }).join("");
+      const coachingNotes = (record.coaching_notes || []).map((note) =>
+        `<div class="row"><div class="main"><div class="t">${esc(note.original_text || "")}</div><div class="d">更自然地说：${esc(note.corrected_text || "")}</div></div></div>`
+      ).join("");
       $("#detail").innerHTML = `
         <div class="card" style="margin-bottom:16px">
           <div style="font-size:18px;font-weight:600">${esc(record.course_title)}</div>
@@ -1219,6 +1246,8 @@
           <div class="grades-row">${gradeChips(record.segments_grades)}</div>
         </div>
         <div class="section"><h3>悦琳说过的句子</h3><div class="list">${lines || `<div class="empty" style="padding:20px">暂无摘录</div>`}</div></div>
+        ${coachingNotes ? `<div class="section"><h3>自然纠正记录</h3><div class="list">${coachingNotes}</div></div>` : ""}
+        ${pronunciationDetails ? `<div class="section"><h3>跟读发音详情（家长）</h3><div class="parent-pron-grid">${pronunciationDetails}</div></div>` : ""}
         ${weakLines ? `<div class="section"><h3>说错/待加强的句子</h3><div class="list">${weakLines}</div></div>` : ""}
         <div class="section"><h3>易错点总结</h3>
           <div class="card" style="padding:16px 20px">${(record.summary?.error_points || []).map((p) => `<div style="padding:4px 0">· ${esc(p)}</div>`).join("")}</div>
@@ -1259,7 +1288,7 @@
     try {
       const cfg = await api("/api/config");
       const voiceSel = $("#voiceSel");
-      const curVoice = cfg.tts_voice || "en-US-JennyNeural";
+      const curVoice = cfg.tts_voice || "en-US-AvaMultilingualNeural";
       voiceSel.innerHTML = Object.entries(cfg.tts_voice_options || {}).map(([k, label]) =>
         `<option value="${k}" ${k === curVoice ? "selected" : ""}>${esc(label)}</option>`).join("");
       $("#studentInfo").innerHTML = `

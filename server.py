@@ -66,6 +66,7 @@ def api_status():
         "ok": True,
         "student": _config().get("student", {}),
         "deepseek": "mock" if not llm.enabled() else "live",
+        "deepseek_model": llm.model_name(),
         "azure": azure_speech.status(),
         "courses": len(storage.list_courses()),
         "sessions": len(storage.list_sessions()),
@@ -181,7 +182,7 @@ async def recognize(audio: UploadFile | None = File(None), session_id: str = For
     raw = await audio.read() if audio else b""
     session = ACTIVE_SESSIONS.get(session_id)
     server_expected = ((session or {}).get("pending") or {}).get("target_text", "")
-    result = azure_speech.recognize(raw, expected=server_expected or expected)
+    result = azure_speech.transcribe(raw, expected=server_expected or expected)
     audio_id = _cache_audio(raw, session_id) if raw else None
     if raw:
         storage.add_usage(stt_seconds=max(3, len(raw) / 32000))
@@ -195,7 +196,7 @@ def tts(payload: dict):
     """AI 文本合成语音(带说话风格)。真实模式返回 mp3;失败/mock 返回 browser 标记由前端兜底。
 
     可选传 style(friendly/cheerful/hopeful/chat/excited/assistant)、voice(音色白名单)、
-    demo(跟读示范句变调);style/voice 不传则后端自动处理。
+    demo(跟读示范句自然降速);style/voice 不传则后端自动处理。
     """
     text = (payload.get("text") or "").strip()
     if not text:
@@ -214,29 +215,36 @@ def tts(payload: dict):
     return {"ok": True, "mode": "browser", "text": text}
 
 
-@app.post("/api/chat/reply")
-def chat_reply(payload: dict):
-    """Analyze one student turn, then apply a guarded lesson transition."""
-    session_id = _active_session_id(payload)
+def _process_turn(session_id: str, student_text: str, input_mode: str, audio_bytes: bytes | None = None):
+    """One server-owned turn: understand, optionally assess, then transition."""
     session = ACTIVE_SESSIONS.get(session_id)
     if not session:
         return JSONResponse({"ok": False, "error": "会话不存在或已过期,请重新开始"}, status_code=404)
-    student_text = str(payload.get("text") or "").strip()
+    student_text = str(student_text or "").strip()
     if not student_text:
         return JSONResponse({"ok": False, "error": "没有识别到内容,请再说一次"}, status_code=400)
     lesson = session.get("_lesson") or _course_ctx(storage.get_course(session.get("course_id", "")) or {})
     analysis = dialogue_manager.analyze(session, student_text)
-    input_mode = payload.get("input_mode") if payload.get("input_mode") in {"audio", "typed"} else ("audio" if payload.get("audio_id") else "typed")
+    input_mode = input_mode if input_mode in {"audio", "typed"} else "typed"
     pronunciation = None
     pending = session.get("pending") or {}
     completed_segment_name = pending.get("segment_name", "")
-    if pending.get("expected_mode") == "repeat" and analysis.get("user_act") == "repeat" and input_mode == "audio":
-        cached = _AUDIO_CACHE.pop(payload.get("audio_id", ""), None)
-        if cached and cached.get("session_id") == session_id:
-            pronunciation = azure_speech.pronunciation(cached["raw"], pending.get("target_text", ""))
-            storage.add_usage(pron_seconds=max(3, len(cached["raw"]) / 32000))
-            if pronunciation.get("error"):
-                analysis = {**analysis, "speech_degraded": True}
+    expected_action = pending.get("expected_action") or pending.get("expected_mode") or "open_answer"
+    intent = analysis.get("intent") or analysis.get("user_act")
+    reference_text = pending.get("reference_text") or pending.get("target_text", "")
+
+    # This is the only pronunciation trigger in the application.
+    if (
+        expected_action == "repeat"
+        and intent in {"repeat_attempt", "repeat"}
+        and input_mode == "audio"
+        and audio_bytes
+        and reference_text
+    ):
+        pronunciation = azure_speech.assess_scripted(audio_bytes, reference_text)
+        storage.add_usage(pron_seconds=max(3, len(audio_bytes) / 32000))
+        if pronunciation.get("error"):
+            analysis = {**analysis, "speech_degraded": True}
     try:
         result = dialogue_manager.apply_turn(
             session,
@@ -251,6 +259,7 @@ def chat_reply(payload: dict):
     grade = result.get("segment_grade")
     return {
         "ok": True,
+        "student_text": student_text,
         **result,
         # Temporary compatibility fields for older front-end clients.
         "feedback": result.get("pronunciation"),
@@ -259,6 +268,63 @@ def chat_reply(payload: dict):
         "encouragement": _encouragement(grade) if grade else None,
         "guide_zh": False,
     }
+
+
+@app.post("/api/turn/text")
+def turn_text(payload: dict):
+    """Unified typed turn. Typed input can never produce pronunciation data."""
+    return _process_turn(
+        _active_session_id(payload),
+        str(payload.get("text") or ""),
+        "typed",
+        audio_bytes=None,
+    )
+
+
+@app.post("/api/turn/audio")
+async def turn_audio(audio: UploadFile | None = File(None), session_id: str = Form("")):
+    """Unified audio turn: bilingual STT → intent → optional scripted assessment."""
+    raw = await audio.read() if audio else b""
+    if not raw:
+        return JSONResponse({"ok": False, "error": "缺少录音,请重新录制"}, status_code=400)
+    session = ACTIVE_SESSIONS.get(session_id)
+    if not session:
+        return JSONResponse({"ok": False, "error": "会话不存在或已过期,请重新开始"}, status_code=404)
+    pending = session.get("pending") or {}
+    expected_action = pending.get("expected_action") or pending.get("expected_mode") or "open_answer"
+    # Only scripted repeat tasks may bias recognition toward a reference sentence.
+    # Open conversation must remain genuinely open instead of being pulled toward
+    # the authored sample answer by Azure's phrase hints.
+    expected = (pending.get("reference_text") or pending.get("target_text", "")) if expected_action == "repeat" else ""
+    transcription = azure_speech.transcribe(raw, expected=expected)
+    storage.add_usage(stt_seconds=max(3, len(raw) / 32000))
+    text = (transcription.get("text") or "").strip()
+    if not text:
+        return JSONResponse(
+            {"ok": False, "error": transcription.get("error") or "没有听清,请再说一次"},
+            status_code=422,
+        )
+    result = _process_turn(session_id, text, "audio", audio_bytes=raw)
+    if isinstance(result, JSONResponse):
+        return result
+    return {
+        **result,
+        "transcription": {
+            "text": text,
+            "language": transcription.get("detected", ""),
+            "mode": transcription.get("mode", "mock"),
+        },
+    }
+
+
+@app.post("/api/chat/reply")
+def chat_reply(payload: dict):
+    """Compatibility endpoint for clients using recognize → reply."""
+    session_id = _active_session_id(payload)
+    input_mode = payload.get("input_mode") if payload.get("input_mode") in {"audio", "typed"} else ("audio" if payload.get("audio_id") else "typed")
+    cached = _AUDIO_CACHE.pop(payload.get("audio_id", ""), None) if input_mode == "audio" else None
+    raw = cached.get("raw") if cached and cached.get("session_id") == session_id else None
+    return _process_turn(session_id, str(payload.get("text") or ""), input_mode, audio_bytes=raw)
 
 
 def _encouragement(grade: str) -> str:
@@ -286,6 +352,7 @@ def summary(payload: dict):
         session.get("history", []),
         session.get("grades", {}),
         session.get("activity_results", {}),
+        session.get("coaching_notes", []),
     )
     record["id"] = uuid.uuid4().hex[:10]
     record["date"] = time.strftime("%Y-%m-%d %H:%M")
@@ -363,8 +430,11 @@ def api_config():
         "student": _config().get("student", {}),
         "mock": not (llm.enabled() or azure_speech.enabled()),
         "deepseek": llm.enabled(),
+        "deepseek_model": llm.model_name(),
         "azure": azure_speech.enabled(),
         "tts_voice": azure_speech.tts_voice(),
+        "tts_voice_zh": azure_speech.tts_voice_zh(),
+        "tts_region": azure_speech.status().get("tts_region"),
         "tts_voice_options": azure_speech.TTS_VOICE_OPTIONS,
     }
 
@@ -385,6 +455,8 @@ def save_keys(payload: dict):
     env["AZURE_SPEECH_REGION"] = payload.get("azure_region", env.get("AZURE_SPEECH_REGION", "eastasia"))
     voice = payload.get("tts_voice", "")
     if voice in azure_speech.TTS_VOICE_OPTIONS:
+        env["AZURE_TTS_VOICE_EN"] = voice
+        # Keep the old variable in sync for older local deployments.
         env["TTS_VOICE"] = voice
     for k, v in env.items():
         lines.append(f"{k}={v}")

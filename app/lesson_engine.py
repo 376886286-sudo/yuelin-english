@@ -19,14 +19,19 @@ def _dialogue(segment: dict) -> list[tuple[str, str]]:
     return out
 
 
-def infer_expected_mode(prompt: str) -> str:
-    """Infer the teaching mode from the teacher prompt, not student speech."""
+def infer_expected_action(prompt: str) -> str:
+    """Infer the server-owned teaching action from the teacher prompt."""
     low = (prompt or "").strip().lower()
     if low.startswith(("repeat ", "repeat after me", "listen and repeat")):
         return "repeat"
     if low.startswith(("is ", "are ", "do ", "does ", "can ", "could ", "would ")):
-        return "closed_answer"
+        return "fixed_answer"
     return "open_answer"
+
+
+def infer_expected_mode(prompt: str) -> str:
+    """Backward-compatible alias for older course clients."""
+    return infer_expected_action(prompt)
 
 
 def build_activities(lesson: dict) -> list[dict]:
@@ -58,6 +63,7 @@ def build_activities(lesson: dict) -> list[dict]:
                         break
 
             target = entries[b_pos][1]
+            action = infer_expected_action(prompt)
             activities.append(
                 {
                     "id": f"{code}_Q{activity_idx + 1}",
@@ -66,7 +72,9 @@ def build_activities(lesson: dict) -> list[dict]:
                     "segment_name": segment.get("name_zh", "") or code,
                     "activity_idx": activity_idx,
                     "prompt": prompt,
-                    "expected_mode": infer_expected_mode(prompt),
+                    "expected_action": action,
+                    "reference_text": target if action == "repeat" else None,
+                    "expected_mode": action,
                     "target_text": target,
                     "expected_intent": "answer",
                     "closing_prompt": trailing,
@@ -86,9 +94,11 @@ def build_activities(lesson: dict) -> list[dict]:
                 "segment_name": "往期易错点",
                 "activity_idx": idx,
                 "prompt": f"Listen and repeat: {target}",
+                "expected_action": "repeat",
+                "reference_text": target,
                 "expected_mode": "repeat",
                 "target_text": target,
-                "expected_intent": "repeat",
+                "expected_intent": "repeat_attempt",
                 "closing_prompt": "",
             }
         )
@@ -98,10 +108,18 @@ def build_activities(lesson: dict) -> list[dict]:
 def make_pending(activity: dict | None) -> dict | None:
     if not activity:
         return None
+    action = activity.get("expected_action") or activity.get("expected_mode") or "open_answer"
+    target = activity.get("target_text") or ""
     return {
         **deepcopy(activity),
+        "expected_action": action,
+        "reference_text": activity.get("reference_text") or (target if action == "repeat" else None),
+        # Compatibility mirrors for the previous frontend/API contract.
+        "expected_mode": action,
         "attempts": 0,
+        "attempt_count": 0,
         "hint_level": 0,
+        "assistance_level": "none",
         "repeat_attempts": 0,
         "completed": False,
     }
@@ -112,9 +130,11 @@ def initial_state(lesson: dict) -> dict:
     first = activities[0] if activities else None
     return {
         "activity_pos": 0,
+        "task_idx": 0,
         "segment_idx": first.get("segment_idx", 0) if first else 0,
         "pending": make_pending(first),
         "suspended_task": None,
+        "coaching_notes": [],
         "activity_results": {},
         "grades": {"segments": {}, "weak": []},
         "done": not bool(first),

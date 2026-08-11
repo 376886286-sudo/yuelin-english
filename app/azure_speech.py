@@ -2,8 +2,8 @@
 """Azure 语音模块。
 
 有 AZURE_SPEECH_KEY + AZURE_SPEECH_REGION 时接入 Azure Speech SDK:
-- recognize:PushAudioInputStream 喂入 WAV/PCM 字节,只做中英自动识别
-- pronunciation:固定 en-US + reference_text,只做 scripted 跟读评估
+- transcribe:PushAudioInputStream 喂入 WAV/PCM 字节,只做中英自动识别
+- assess_scripted:固定 en-US + reference_text,只做 scripted 跟读评估
 - tts:SpeechSynthesizer 合成 mp3 字节
 
 无 Key / SDK 未安装时:
@@ -33,17 +33,31 @@ def _region() -> str:
     return (os.getenv("AZURE_SPEECH_REGION") or "").strip()
 
 
+def _tts_key() -> str:
+    return (os.getenv("AZURE_TTS_KEY") or _key()).strip()
+
+
+def _tts_region() -> str:
+    return (os.getenv("AZURE_TTS_REGION") or _region()).strip()
+
+
 def enabled() -> bool:
     return bool(_key() and _region() and SDK_AVAILABLE)
+
+
+def tts_enabled() -> bool:
+    return bool(_tts_key() and _tts_region() and SDK_AVAILABLE)
 
 
 def status() -> dict:
     return {
         "enabled": enabled(),
         "asr": bool(enabled()),
-        "tts": bool(enabled()),
+        "tts": tts_enabled(),
         "pronunciation": bool(enabled()),
         "region": _region() or "eastasia",
+        "tts_region": _tts_region() or _region() or "eastasia",
+        "tts_dedicated_resource": bool(os.getenv("AZURE_TTS_KEY") and os.getenv("AZURE_TTS_REGION")),
         "sdk": SDK_AVAILABLE,
     }
 
@@ -57,14 +71,14 @@ def _score_label(score: int) -> str:
     return "weak"
 
 
-def recognize(audio_bytes: bytes = None, expected: str = "", mode: str = "mock") -> dict:
+def transcribe(audio_bytes: bytes = None, expected: str = "", mode: str = "mock") -> dict:
     """普通语音识别,不做发音评估。
 
     - 真实模式:音频字节 → 双语 ASR,返回 {text, mode, detected}
     - mock 模式:返回预期句,便于前端链路跑通
     """
     if enabled() and audio_bytes:
-        return _real_recognize(audio_bytes)
+        return _real_transcribe(audio_bytes)
     return {
         "text": expected or "I like it.",
         "mode": mode,
@@ -72,7 +86,12 @@ def recognize(audio_bytes: bytes = None, expected: str = "", mode: str = "mock")
     }
 
 
-def _real_recognize(audio_bytes: bytes) -> dict:
+def recognize(audio_bytes: bytes = None, expected: str = "", mode: str = "mock") -> dict:
+    """Compatibility alias; new code should call transcribe()."""
+    return transcribe(audio_bytes, expected=expected, mode=mode)
+
+
+def _real_transcribe(audio_bytes: bytes) -> dict:
     """真实 ASR(中英自动检测),在子线程跑以防空音频卡死请求。"""
     if not audio_bytes or len(audio_bytes) < 500:
         # 空/极短音频直接视为没听清,不浪费一次调用
@@ -139,14 +158,14 @@ def _real_recognize(audio_bytes: bytes) -> dict:
     }
 
 
-def pronunciation(audio_bytes: bytes, reference_text: str) -> dict:
+def assess_scripted(audio_bytes: bytes, reference_text: str) -> dict:
     """Scripted 跟读评估;调用方必须同时提供音频和后端目标句。"""
     reference_text = (reference_text or "").strip()
     if not reference_text:
         return {"score": 0, "accuracy": 0, "fluency": 0, "completeness": 0,
                 "prosody": None, "words": [], "weak_words": [], "error": "missing reference_text"}
     if enabled() and audio_bytes:
-        return _real_pronunciation(audio_bytes, reference_text)
+        return _real_assess_scripted(audio_bytes, reference_text)
 
     # Mock is used only for an audio turn. Typed text never calls this function.
     words = [
@@ -167,7 +186,12 @@ def pronunciation(audio_bytes: bytes, reference_text: str) -> dict:
     }
 
 
-def _real_pronunciation(audio_bytes: bytes, reference_text: str) -> dict:
+def pronunciation(audio_bytes: bytes, reference_text: str) -> dict:
+    """Compatibility alias; new code should call assess_scripted()."""
+    return assess_scripted(audio_bytes, reference_text)
+
+
+def _real_assess_scripted(audio_bytes: bytes, reference_text: str) -> dict:
     """Fixed en-US scripted assessment with completeness and optional prosody."""
     if not audio_bytes or len(audio_bytes) < 500:
         return {"mode": "azure", "reference_text": reference_text, "score": 0,
@@ -219,6 +243,7 @@ def _real_pronunciation(audio_bytes: bytes, reference_text: str) -> dict:
                         "error_type": error_type,
                     }
                 )
+            pronunciation_score = int(round(getattr(assessment, "pronunciation_score", 0) or 0))
             accuracy = int(round(assessment.accuracy_score or 0))
             fluency = int(round(assessment.fluency_score or 0))
             completeness = int(round(assessment.completeness_score or 0))
@@ -228,7 +253,7 @@ def _real_pronunciation(audio_bytes: bytes, reference_text: str) -> dict:
                 {
                     "ok": True,
                     "recognized_text": (result.text or "").strip(),
-                    "score": accuracy,
+                    "score": pronunciation_score or accuracy,
                     "accuracy": accuracy,
                     "fluency": fluency,
                     "completeness": completeness,
@@ -262,18 +287,28 @@ def _real_pronunciation(audio_bytes: bytes, reference_text: str) -> dict:
 
 # 可选音色(家长设置页展示)
 TTS_VOICE_OPTIONS = {
-    "en-US-JennyNeural": "Jenny 女声(温暖亲切,推荐)",
+    "en-US-AvaMultilingualNeural": "Ava 女声(自然对话,默认推荐)",
+    "en-US-EmmaMultilingualNeural": "Emma 女声(温和自然)",
     "en-US-AriaNeural": "Aria 女声(沉稳大气)",
-    "en-US-AvaMultilingualNeural": "Ava 女声(自然流畅)",
+    "en-US-JennyNeural": "Jenny 女声(温暖亲切)",
+    "en-US-Emma2:DragonHDLatestNeural": "Emma2 Dragon HD(拟真对话,需支持区域)",
     "en-US-GuyNeural": "Guy 男声(沉稳男老师)",
     "en-US-AndrewMultilingualNeural": "Andrew 男声(温和男老师)",
 }
 
 
 def tts_voice() -> str:
-    """当前老师音色(动态读 env,支持家长设置页保存后生效)。"""
-    v = (os.getenv("TTS_VOICE") or "").strip()
-    return v if v in TTS_VOICE_OPTIONS else "en-US-JennyNeural"
+    """Current English teacher voice, read dynamically from environment."""
+    v = (os.getenv("AZURE_TTS_VOICE_EN") or os.getenv("TTS_VOICE") or "").strip()
+    return v if v in TTS_VOICE_OPTIONS else "en-US-AvaMultilingualNeural"
+
+
+def tts_voice_zh() -> str:
+    return (os.getenv("AZURE_TTS_VOICE_ZH") or "zh-CN-XiaoxiaoNeural").strip()
+
+
+def _is_hd_voice(voice: str) -> bool:
+    return ":DragonHD" in (voice or "")
 
 # JennyNeural 官方支持的说话风格(微软文档 StyleList),这里只用适合孩子陪练的
 TTS_STYLES = {
@@ -361,41 +396,47 @@ def _has_chinese(text: str) -> bool:
 
 
 def tts(text: str, voice: str = "", style: str | None = None, demo: bool = False) -> dict:
-    """合成语音,带说话风格与语气调整。
+    """Synthesize a natural teacher voice with optional dedicated TTS resource.
 
     - style: 传入白名单内的风格名则强制使用;不传/无效则按文本内容自动挑选
-    - demo: 跟读示范句 → 音调提高、语速放慢,像"小朋友示范",与老师声音区分
-    - 文本含中文(如 AI 的中文引导语) → 自动切到中文语音 Xiaoxiao,中英混读
+    - demo: 跟读示范句只放慢语速,不再强行升高音调
+    - 文本含中文时使用 AZURE_TTS_VOICE_ZH 或 Xiaoxiao
+    - Dragon HD 使用自然韵律和轻量 temperature,不叠加 express-as 变调
     - 风格合成失败自动降级为无风格版本,保证朗读不中断
     - 真实模式:返回 {"mode": "azure", "audio": mp3字节, "style": 实际风格}
     - 失败/mock:返回 {"mode": "browser", "text": 原文},前端用浏览器朗读兜底
     """
-    if not (enabled() and text):
+    if not (tts_enabled() and text):
         return {"mode": "browser", "text": text}
 
     if _has_chinese(text):
-        # 中文引导:用中文语音(中英混合朗读),不套英文风格
-        voice = "zh-CN-XiaoxiaoNeural"
+        voice = tts_voice_zh()
         style = None
-        rate, pitch = "1.02", "+2%"
+        rate, pitch = "0.98", "+0%"
         demo = False
     else:
         voice = voice if voice in TTS_VOICE_OPTIONS else tts_voice()
-        style = style if style in TTS_STYLES else _pick_style(text)
-        # 语速:对话/提问自然语速;带读/示范稍慢便于模仿
+        style = None if _is_hd_voice(voice) else (style if style in TTS_STYLES else _pick_style(text))
         rate = "1.0" if style == "chat" else ("0.96" if style == "friendly" else "0.98")
         if demo:
-            rate, pitch = "0.92", "+12%"
+            rate, pitch = "0.90", "+0%"
         else:
-            pitch = "+5%"
+            pitch = "+0%"
     try:
-        speech_config = speechsdk.SpeechConfig(subscription=_key(), region=_region())
+        speech_config = speechsdk.SpeechConfig(subscription=_tts_key(), region=_tts_region())
         speech_config.set_speech_synthesis_output_format(
             speechsdk.SpeechSynthesisOutputFormat.Audio24Khz48KBitRateMonoMp3
         )
         safe = _add_breaks(_escape_xml(text))
-        # 语气层:风格 + 场景语速 + 句间停顿
-        if style:
+        # HD voices infer conversational prosody from content; keep SSML light.
+        if _is_hd_voice(voice):
+            lang = "zh-CN" if voice.lower().startswith("zh-cn") else "en-US"
+            styled = (
+                f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="{lang}">'
+                f'<voice name="{voice}" parameters="temperature=0.7">'
+                f'<prosody rate="{rate}">{safe}</prosody></voice></speak>'
+            )
+        elif style:
             styled = (
                 f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
                 f'xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="en-US">'
@@ -414,8 +455,9 @@ def tts(text: str, voice: str = "", style: str | None = None, demo: bool = False
         if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
             return {"mode": "azure", "audio": bytes(result.audio_data), "style": style or "zh", "demo": demo}
         # 风格不受支持时降级:无风格版本再试一次
+        lang = "zh-CN" if voice.lower().startswith("zh-cn") else "en-US"
         plain = (
-            f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">'
+            f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="{lang}">'
             f'<voice name="{voice}"><prosody rate="{rate}" pitch="{pitch}">{safe}</prosody></voice></speak>'
         )
         result = _synthesize(speech_config, plain)

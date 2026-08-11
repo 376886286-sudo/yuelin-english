@@ -1184,6 +1184,39 @@ input:focus-visible { box-shadow: var(--focus-ring); }
   gap: 12px;
 }
 
+.pending-task-card {
+  width: 100%;
+  padding: 14px;
+  border: 1px solid rgba(61,155,255,0.24);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, var(--accent-bg), rgba(255,255,255,0.92));
+  box-shadow: var(--shadow-sm);
+  text-align: left;
+}
+
+.pending-task-card[hidden] { display: none; }
+.pending-task-label { color: var(--accent); font-size: 13px; font-weight: 700; }
+.pending-task-target {
+  margin-top: 8px;
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+.pending-task-replay {
+  min-height: var(--tap-min);
+  margin-top: 8px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: rgba(61,155,255,0.10);
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pending-task-note { margin-top: 4px; color: var(--text-2); font-size: 12px; }
+
 .stage-mic {
   position: relative;
   width: 112px;
@@ -1323,6 +1356,8 @@ body.learn-mode .session-view #typeSend {
   .stage-heading { padding-bottom: 12px; }
   .stage-heading-title { font-size: 13px; }
   .stage-control { gap: 10px; }
+  .pending-task-card { padding: 12px; }
+  .pending-task-target { font-size: 16px; }
   .stage-mic,
   .big-mic-btn,
   body.learn-mode .session-view .big-mic-btn,
@@ -1454,8 +1489,15 @@ body.learn-mode .session-view #typeSend {
 }
 
 .pronunciation-main strong { font-size: 28px; color: var(--accent); }
+.pronunciation-cheer { margin-top: 8px; color: var(--text-2); font-size: 14px; }
 .pronunciation-metrics { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 8px; color: var(--text-2); font-size: 13px; }
 .pronunciation-weak { margin-top: 8px; color: var(--weak); font-size: 14px; font-weight: 600; }
+
+.parent-pron-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--s-2); }
+.parent-pron-card { padding: var(--s-2); }
+.parent-pron-card > div:first-child { display: flex; justify-content: space-between; gap: var(--s-2); }
+.parent-pron-card > div:first-child span { color: var(--accent); font-weight: 700; }
+.parent-pron-metrics { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; color: var(--text-2); font-size: 13px; }
 
 /* ============================================================
    PIN 锁定倒计时环

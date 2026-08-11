@@ -2,7 +2,7 @@
 
 给女儿(悦琳)做的 AI 英语口语陪练网站。爸爸上传教案 → AI 理解本轮是在回答、提问、求助还是跟读 → 按教案任务推进 → 自动生成练习记录。
 
-**技术路线**:国际版 Azure(识别 / 合成 / 发音评估)+ DeepSeek(教案解析 / 教师对话 / 记录 / 规划)
+**技术路线**:Azure Speech(双语 STT / 明确跟读评分 / TTS)+ DeepSeek V4 Flash(自然对话 / 意图理解 / 渐进纠错)
 **设计**:Apple 风格,双模式(学习 / 家长),详见 `英语口语陪练网站-设计规划.md`
 
 ## 运行
@@ -20,15 +20,17 @@ python server.py          # → http://localhost:8000
 python -m unittest discover -v
 ```
 
-回归用例覆盖开放回答、连续插话、中英文提问、求助提示、跟读评分、A/B/C/D、历史顺序和服务降级。
+回归用例覆盖开放回答、自由聊天、连续插话、中英文提问、求助提示、明确跟读评分、A/B/C/D、历史顺序和服务降级。
 
 ### 接入真实服务
 
 1. 复制 `.env.example` 为 `.env`,填入 Key(也可以在网页「家长模式 → 设置」里填):
    ```
    DEEPSEEK_API_KEY=sk-...
+   DEEPSEEK_MODEL=deepseek-v4-flash
    AZURE_SPEECH_KEY=...
    AZURE_SPEECH_REGION=eastasia
+   AZURE_TTS_VOICE_EN=en-US-AvaMultilingualNeural
    ```
 2. 重启服务生效。
 
@@ -37,7 +39,7 @@ python -m unittest discover -v
 | 谁 | 做什么 |
 |---|---|
 | 爸爸 | 家长模式 → 教案库 → 上传 TXT/MD/DOCX/DOC/PDF/图片 → 确认入库 |
-| 悦琳 | 学习模式 → 选课程 → 按 AI 提示开口说(按住说话)→ 逐词发音反馈 → 环节评级 A/B/C/D |
+| 悦琳 | 学习模式 → 选课程 → 自然回答/提问/求助 → 仅在明确跟读时获得简洁发音反馈 |
 | 爸爸 | 家长模式 → 会话记录 → 查看评级 / 易错点 / 第 1·3·7 天复习计划 |
 
 ## 目录结构
@@ -46,7 +48,8 @@ python -m unittest discover -v
 server.py            # FastAPI 主程序(全部 API)
 app/parser.py        # 教案解析(TXT / MD / DOCX / DOC / PDF / 图片)
 app/lesson_engine.py # 教案 activity / pending task / 确定性推进
-app/turn_analyzer.py # DeepSeek 结构化意图与语义判断(规则降级)
+app/turn_manager.py  # DeepSeek V4 Flash 结构化意图、自然回应与渐进纠错
+app/turn_analyzer.py # 旧模块兼容入口
 app/dialogue_manager.py # 插话恢复、历史、提示/示范与会话编排
 app/scoring.py       # 任务 A/B/C/D(与发音分独立)
 app/llm.py           # DeepSeek JSON Output / 总结
@@ -65,7 +68,7 @@ config.json          # 学员信息 / 家长 PIN(默认 1234)
 
 - [x] P0:双模式框架 / 教案上传解析(TXT+DOCX+图片)/ 课程库 / 学习会话
 - [x] P1:Azure 双语 ASR + TTS;仅 repeat 音频做 scripted 发音评估
-- [x] P2:DeepSeek 结构化 Turn Analyzer / 插话恢复 / 跟读记录 / 复习计划
+- [x] P2:DeepSeek V4 Flash Turn Manager / 插话恢复 / 渐进纠错 / 跟读记录
 - [ ] P3:局域网部署 / README 完善 / Unit01·02 实测
 
 ## 其他电脑部署清单
