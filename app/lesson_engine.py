@@ -36,6 +36,8 @@ def infer_expected_mode(prompt: str) -> str:
 
 def build_activities(lesson: dict) -> list[dict]:
     """Compile course dialogue and optional review pack into ordered tasks."""
+    if str(lesson.get("schema_version")) == "2.0":
+        return _build_v2_activities(lesson)
     activities: list[dict] = []
     segments = lesson.get("segments", []) or []
     for segment_idx, segment in enumerate(segments):
@@ -102,6 +104,66 @@ def build_activities(lesson: dict) -> list[dict]:
                 "closing_prompt": "",
             }
         )
+    return activities
+
+
+def _build_v2_activities(lesson: dict) -> list[dict]:
+    """Compile explicit lesson-v2 tasks without inferring teaching intent."""
+    activities: list[dict] = []
+    segments = lesson.get("segments") or []
+    for segment_idx, segment in enumerate(segments):
+        tasks = segment.get("tasks") or []
+        for task_idx, task in enumerate(tasks):
+            action = task.get("expected_action") or "open_answer"
+            samples = [str(value).strip() for value in (task.get("sample_answers") or []) if str(value).strip()]
+            reference = (task.get("reference_text") or "").strip() if action == "repeat" else None
+            target = reference or (samples[0] if samples else "")
+            activities.append(
+                {
+                    "id": task.get("id") or f"{segment.get('code', 'SEG')}_Q{task_idx + 1}",
+                    "segment_idx": segment_idx,
+                    "segment_code": segment.get("code") or f"SEG{segment_idx + 1}",
+                    "segment_name": segment.get("name_zh") or segment.get("code") or f"Segment {segment_idx + 1}",
+                    "activity_idx": task_idx,
+                    "title": task.get("title", ""),
+                    "prompt": task.get("teacher_prompt") or "Please answer the teacher.",
+                    "expected_action": action,
+                    "reference_text": reference,
+                    "expected_mode": action,
+                    "target_text": target,
+                    "sample_answers": samples,
+                    "completion_rule": deepcopy(task.get("completion_rule") or {}),
+                    "help": deepcopy(task.get("help") or {}),
+                    "correction": deepcopy(task.get("correction") or {}),
+                    "expected_intent": "repeat_attempt" if action == "repeat" else ("question" if action == "ask_question" else "answer"),
+                    "closing_prompt": task.get("closing_prompt") or "",
+                }
+            )
+
+    review_idx = len(segments)
+    for idx, item in enumerate(lesson.get("review_errors", []) or []):
+        target = (item.get("drill") or item.get("text") or "").strip()
+        if target:
+            activities.append(
+                {
+                    "id": f"REVIEW_Q{idx + 1}",
+                    "segment_idx": review_idx,
+                    "segment_code": "REVIEW",
+                    "segment_name": "往期易错点",
+                    "activity_idx": idx,
+                    "prompt": f"Listen and repeat: {target}",
+                    "expected_action": "repeat",
+                    "reference_text": target,
+                    "expected_mode": "repeat",
+                    "target_text": target,
+                    "sample_answers": [target],
+                    "completion_rule": {"semantic_goal": "repeat the review sentence"},
+                    "help": {},
+                    "correction": {},
+                    "expected_intent": "repeat_attempt",
+                    "closing_prompt": "",
+                }
+            )
     return activities
 
 

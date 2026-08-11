@@ -108,6 +108,25 @@ def _semantic_valid(pending: dict, text: str) -> bool:
         return False
     prompt = (pending.get("prompt") or "").lower()
     target = pending.get("reference_text") or pending.get("target_text") or ""
+    rule = pending.get("completion_rule") or {}
+
+    if expected_action(pending) == "ask_question":
+        return _looks_question(text)
+    if rule:
+        words = norm.split()
+        if len(words) < int(rule.get("min_words") or 1):
+            return False
+        required_all = [_normalized(value) for value in (rule.get("required_all") or []) if _normalized(value)]
+        required_any = [_normalized(value) for value in (rule.get("required_any") or []) if _normalized(value)]
+        if required_all and not all(value in norm for value in required_all):
+            return False
+        if required_any and not any(value in norm for value in required_any):
+            return False
+        samples = pending.get("sample_answers") or []
+        if required_all or required_any:
+            return True
+        if samples and max((_similarity(text, sample) for sample in samples), default=0) >= 0.42:
+            return True
 
     if expected_action(pending) == "repeat":
         return _similarity(text, target) >= 0.55
@@ -177,6 +196,18 @@ def _rule_decision(pending: dict, student_text: str) -> dict:
         return {**base, "intent": "skip", "response_action": "skip", "response_text": "Okay, we can move on.", "resume_task": False, "semantic_result": "not_applicable"}
     if _looks_help(student_text):
         return {**base, "intent": "help_request", "response_action": "hint_then_resume", "response_text": "No problem. Let's make it easier together.", "semantic_result": "not_applicable"}
+    if expected_action(pending) == "ask_question" and _looks_question(student_text):
+        return {
+            **base,
+            "intent": "question",
+            "task_relevant": True,
+            "task_completed": True,
+            "answer_quality": "correct",
+            "response_action": "acknowledge",
+            "response_text": "Great question! I understood you.",
+            "resume_task": False,
+            "semantic_result": "valid",
+        }
     if _looks_question(student_text):
         return {**base, "intent": "question", "response_action": "answer_then_resume", "response_text": _word_meaning_answer(student_text), "semantic_result": "not_applicable"}
     if not re.search(r"[A-Za-z0-9\u4e00-\u9fff]", student_text or ""):
@@ -223,7 +254,8 @@ def _system_prompt() -> str:
         "Classify intent as answer, question, repeat_attempt, help_request, free_talk, off_topic, unclear, or skip. "
         "Return keys: intent, understood, task_relevant, task_completed, answer_quality "
         "(correct/understandable/needs_recast/not_applicable), response_action, response_text, corrected_text, resume_task, language. "
-        "Questions, help, free talk, and off-topic talk never complete the pending task. A repeat_attempt is possible only when expected_action is repeat. "
+        "Questions normally pause the pending task, except when expected_action is ask_question; then a relevant learner question completes it. "
+        "Help, free talk, and off-topic talk never complete the pending task. A repeat_attempt is possible only when expected_action is repeat. "
         "Be warm, curious, and concise. For a real answer with a small grammar error, understand the meaning first and use a gentle natural recast; never give a grammar lecture. "
         "Do not ask the next lesson question in response_text because the deterministic lesson engine will add it. "
         "For a child question, answer simply in English and add brief Chinese only when it helps. Keep response_text to at most two short sentences."
@@ -255,6 +287,8 @@ def analyze_turn(pending: dict, student_text: str, history: list[dict] | None = 
             "prompt": pending.get("prompt"),
             "expected_action": expected_action(pending),
             "reference_text": pending.get("reference_text") or pending.get("target_text"),
+            "sample_answers": pending.get("sample_answers") or [],
+            "completion_rule": pending.get("completion_rule") or {},
             "assistance_level": pending.get("assistance_level", "none"),
             "attempt_count": pending.get("attempt_count", pending.get("attempts", 0)),
         },
@@ -269,15 +303,21 @@ def analyze_turn(pending: dict, student_text: str, history: list[dict] | None = 
         intent = data.get("intent") if data.get("intent") in INTENTS else fallback["intent"]
 
         # Deterministic interruption and repeat guards always win.
-        if fallback["intent"] in {"question", "help_request", "skip"}:
+        if fallback["intent"] in {"help_request", "skip"}:
             intent = fallback["intent"]
+        elif fallback["intent"] == "question":
+            intent = "question"
         elif expected_action(pending) == "repeat" and fallback["intent"] == "repeat_attempt":
             intent = "repeat_attempt"
         elif expected_action(pending) != "repeat" and intent == "repeat_attempt":
             intent = "answer" if fallback["intent"] == "answer" else fallback["intent"]
 
         task_completed = bool(data.get("task_completed"))
-        if intent not in {"answer", "repeat_attempt"}:
+        if expected_action(pending) == "ask_question" and intent == "question" and fallback.get("task_completed"):
+            task_completed = True
+        if intent not in {"answer", "repeat_attempt"} and not (
+            expected_action(pending) == "ask_question" and intent == "question"
+        ):
             task_completed = False
         if expected_action(pending) == "repeat" and intent != "repeat_attempt":
             task_completed = False
@@ -286,6 +326,8 @@ def analyze_turn(pending: dict, student_text: str, history: list[dict] | None = 
 
         quality = data.get("answer_quality") if data.get("answer_quality") in ANSWER_QUALITIES else fallback["answer_quality"]
         action = data.get("response_action") if data.get("response_action") in RESPONSE_ACTIONS else fallback["response_action"]
+        if expected_action(pending) == "ask_question" and intent == "question" and task_completed:
+            action = "acknowledge"
         corrected = str(data.get("corrected_text") or fallback.get("corrected_text") or "").strip()[:180]
         response = str(data.get("response_text") or fallback["response_text"]).strip()[:500]
         semantic = "valid" if task_completed else ("not_applicable" if intent in {"question", "help_request", "free_talk", "off_topic", "skip"} else "invalid")

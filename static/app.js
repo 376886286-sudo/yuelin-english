@@ -634,6 +634,8 @@
       const mode = session?.expected_action || session?.pending?.expected_action || "open_answer";
       stageTip.textContent = mode === "repeat"
         ? "跟着老师读这一句 · 本轮会做发音反馈"
+        : mode === "ask_question"
+          ? "轮到你向老师提问 · 用英语问出一个完整问题"
         : "回答老师就好,不用照着老师说 · 有问题也可以直接问";
       stageActions.style.display = "flex";
       if (typeBtn) typeBtn.style.display = "inline-flex";
@@ -973,12 +975,12 @@
     app.innerHTML = parentShell("教案库", `
       <div class="section">
         <h3>上传教案</h3>
-        <p class="caption" style="margin-bottom:12px">支持 TXT / MD / DOCX / DOC / PDF / 图片(PNG·JPG),可多选。DeepSeek 解析后确认入库。</p>
-        <input type="file" id="fileInput" multiple accept=".txt,.md,.docx,.doc,.pdf,.png,.jpg,.jpeg,.webp" style="display:none">
+        <p class="caption" style="margin-bottom:12px">优先支持 lesson-v2 JSON，也兼容 TXT / MD / DOCX / DOC / PDF / 图片(PNG·JPG)，可多选。非 JSON 教案由 DeepSeek 解析后确认入库。</p>
+        <input type="file" id="fileInput" multiple accept=".json,.txt,.md,.docx,.doc,.pdf,.png,.jpg,.jpeg,.webp" style="display:none">
         <div class="dropzone" id="dropzone">
           <div class="big">📤</div>
           <div>点击或拖入教案文件</div>
-          <div class="caption">TXT · MD · DOCX · DOC · PDF · 图片</div>
+          <div class="caption">lesson-v2 JSON · TXT · MD · DOCX · DOC · PDF · 图片</div>
         </div>
       </div>
       <div class="section" id="previewBox" style="display:none">
@@ -1346,8 +1348,11 @@
     app.querySelectorAll("[data-nav]").forEach((el) => {
       el.onclick = () => { location.hash = el.dataset.nav; };
     });
+    const currentPath = location.hash.replace(/^#/, "");
     app.querySelectorAll(".tabbar .tab-btn").forEach((b) => {
-      b.classList.toggle("active", b.dataset.nav === location.hash);
+      const targetPath = b.dataset.nav;
+      const isRecordDetail = targetPath === "/parent/records" && currentPath.startsWith("/parent/records/");
+      b.classList.toggle("active", targetPath === currentPath || isRecordDetail);
     });
   }
 

@@ -1,6 +1,6 @@
 # 悦琳英语口语陪练 · 网页版
 
-给女儿(悦琳)做的 AI 英语口语陪练网站。爸爸上传教案 → AI 理解本轮是在回答、提问、求助还是跟读 → 按教案任务推进 → 自动生成练习记录。
+给女儿(悦琳)做的 AI 英语口语陪练网站。爸爸上传教案 → AI 理解本轮是在回答、按角色提问、临时提问、求助还是跟读 → 按教案任务推进 → 自动生成练习记录。
 
 **技术路线**:Azure Speech(双语 STT / 明确跟读评分 / TTS)+ DeepSeek V4 Flash(自然对话 / 意图理解 / 渐进纠错)
 **设计**:Apple 风格,双模式(学习 / 家长),详见 `英语口语陪练网站-设计规划.md`
@@ -38,7 +38,7 @@ python -m unittest discover -v
 
 | 谁 | 做什么 |
 |---|---|
-| 爸爸 | 家长模式 → 教案库 → 上传 TXT/MD/DOCX/DOC/PDF/图片 → 确认入库 |
+| 爸爸 | 家长模式 → 教案库 → 优先上传 lesson-v2 JSON（兼容 TXT/MD/DOCX/DOC/PDF/图片）→ 确认入库 |
 | 悦琳 | 学习模式 → 选课程 → 自然回答/提问/求助 → 仅在明确跟读时获得简洁发音反馈 |
 | 爸爸 | 家长模式 → 会话记录 → 查看评级 / 易错点 / 第 1·3·7 天复习计划 |
 
@@ -47,6 +47,7 @@ python -m unittest discover -v
 ```
 server.py            # FastAPI 主程序(全部 API)
 app/parser.py        # 教案解析(TXT / MD / DOCX / DOC / PDF / 图片)
+app/lesson_contract.py # lesson-v2 JSON 校验 / 跨项目稳定契约
 app/lesson_engine.py # 教案 activity / pending task / 确定性推进
 app/turn_manager.py  # DeepSeek V4 Flash 结构化意图、自然回应与渐进纠错
 app/turn_analyzer.py # 旧模块兼容入口
@@ -58,6 +59,16 @@ app/storage.py       # 本地 JSON 存储(课程/会话/设置/用量)
 static/              # 前端(单页应用,hash 路由)
 data/                # 运行时数据(courses / sessions / uploads)
 config.json          # 学员信息 / 家长 PIN(默认 1234)
+docs/                # 产品、架构、业务规则、教案契约和 Agent 上下文
+AGENTS.md            # 跨 Agent 长期工作规则
+```
+
+## AI 原生项目上下文
+
+长期规则见 `AGENTS.md`，核心项目摘要见 `docs/ai-context.md`。网站与教案库是两个独立项目，只通过 `schema_version: "2.0"` 的 lesson JSON 连接。新教案上传前可运行：
+
+```bash
+python scripts/validate_lessons.py <lesson文件或目录>
 ```
 
 ## 家长 PIN

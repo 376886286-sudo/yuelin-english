@@ -17,7 +17,7 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from app import azure_speech, dialogue_manager, llm, storage
+from app import azure_speech, dialogue_manager, lesson_contract, llm, storage
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
@@ -99,8 +99,9 @@ async def lesson_upload(file: UploadFile = File(...)):
 def lesson_confirm(payload: dict):
     """确认预览教案入库为课程。"""
     lesson = payload.get("lesson", {})
-    if not lesson.get("title_zh") or not lesson.get("segments"):
-        return JSONResponse({"ok": False, "error": "教案缺少标题或环节,请重新上传"}, status_code=400)
+    errors = lesson_contract.validate_for_import(lesson)
+    if errors:
+        return JSONResponse({"ok": False, "error": "教案校验失败:" + "; ".join(errors[:12])}, status_code=400)
     course = storage.save_course(lesson)
     return {"ok": True, "course": course}
 

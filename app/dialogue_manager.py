@@ -273,7 +273,7 @@ def apply_turn(
         reply = _resume_reply(analysis.get("response_text") or analysis.get("reply"), pending.get("prompt", ""))
         task_action = "stay"
         pronunciation = None
-    elif intent == "question":
+    elif intent == "question" and expected_action != "ask_question":
         session["suspended_task"] = copy.deepcopy(pending)
         resumed_task_id = pending.get("id")
         reply = _resume_reply(analysis.get("response_text") or analysis.get("reply") or "That is a good question.", pending.get("prompt", ""))
@@ -310,7 +310,8 @@ def apply_turn(
         and bool(analysis.get("task_completed", True))
         and (
             (expected_action == "repeat" and intent == "repeat_attempt")
-            or (expected_action != "repeat" and intent == "answer")
+            or (expected_action == "ask_question" and intent == "question")
+            or (expected_action not in {"repeat", "ask_question"} and intent == "answer")
         )
     ):
         if expected_action == "repeat" and pronunciation:

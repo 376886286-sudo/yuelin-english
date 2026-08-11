@@ -6,6 +6,7 @@
 """
 
 import io
+import json
 import re
 import subprocess
 import tempfile
@@ -15,6 +16,7 @@ from pathlib import Path
 IMG_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 DOC_EXTS = {".txt", ".md", ".docx", ".doc"}
 PDF_EXTS = {".pdf"}
+JSON_EXTS = {".json"}
 
 
 # ---------------------------------------------------------------- 文本提取
@@ -248,6 +250,20 @@ def parse_lesson_text(text: str, source: str = "", source_type: str = "txt") -> 
 def parse_lesson_file(filename: str, raw: bytes) -> dict:
     """解析上传的教案文件。返回结构化课程(图片/扫描件返回占位说明)。"""
     ext = Path(filename).suffix.lower()
+    if ext in JSON_EXTS:
+        from . import lesson_contract
+
+        try:
+            lesson = json.loads(raw.decode("utf-8-sig"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"lesson JSON 无法解析:{exc}") from exc
+        errors = lesson_contract.validate_v2(lesson)
+        if errors:
+            raise ValueError("lesson-v2 校验失败:" + "; ".join(errors[:12]))
+        normalized = lesson_contract.normalize_v2(lesson)
+        normalized["source"] = filename
+        normalized["source_type"] = "json"
+        return normalized
     if ext in IMG_EXTS:
         return {
             "unit": 0, "title_zh": "", "title_en": "", "duration": "",
@@ -272,4 +288,4 @@ def parse_lesson_file(filename: str, raw: bytes) -> dict:
     if ext in DOC_EXTS:
         text = extract_text(filename, raw)
         return parse_lesson_text(text, source=filename, source_type=ext.lstrip("."))
-    raise ValueError(f"不支持的文件类型:{ext}(支持 TXT / MD / DOCX / DOC / PDF / 图片)")
+    raise ValueError(f"不支持的文件类型:{ext}(支持 lesson-v2 JSON / TXT / MD / DOCX / DOC / PDF / 图片)")
