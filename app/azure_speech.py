@@ -2,8 +2,8 @@
 """Azure 语音模块。
 
 有 AZURE_SPEECH_KEY + AZURE_SPEECH_REGION 时接入 Azure Speech SDK:
-- recognize:PushAudioInputStream 喂入 WAV/PCM 字节,ASR + free-form 发音评估(reference_text="")
-- pronunciation:真实评估需要音频,无音频时沿用 mock 逐词打分(打字输入兜底)
+- transcribe:PushAudioInputStream 喂入 WAV/PCM 字节,只做中英自动识别
+- assess_scripted:固定 en-US + reference_text,只做 scripted 跟读评估
 - tts:SpeechSynthesizer 合成 mp3 字节
 
 无 Key / SDK 未安装时:
@@ -33,17 +33,31 @@ def _region() -> str:
     return (os.getenv("AZURE_SPEECH_REGION") or "").strip()
 
 
+def _tts_key() -> str:
+    return (os.getenv("AZURE_TTS_KEY") or _key()).strip()
+
+
+def _tts_region() -> str:
+    return (os.getenv("AZURE_TTS_REGION") or _region()).strip()
+
+
 def enabled() -> bool:
     return bool(_key() and _region() and SDK_AVAILABLE)
+
+
+def tts_enabled() -> bool:
+    return bool(_tts_key() and _tts_region() and SDK_AVAILABLE)
 
 
 def status() -> dict:
     return {
         "enabled": enabled(),
         "asr": bool(enabled()),
-        "tts": bool(enabled()),
+        "tts": tts_enabled(),
         "pronunciation": bool(enabled()),
         "region": _region() or "eastasia",
+        "tts_region": _tts_region() or _region() or "eastasia",
+        "tts_dedicated_resource": bool(os.getenv("AZURE_TTS_KEY") and os.getenv("AZURE_TTS_REGION")),
         "sdk": SDK_AVAILABLE,
     }
 
@@ -57,14 +71,14 @@ def _score_label(score: int) -> str:
     return "weak"
 
 
-def recognize(audio_bytes: bytes = None, expected: str = "", mode: str = "mock") -> dict:
-    """识别音频并做发音评估。
+def transcribe(audio_bytes: bytes = None, expected: str = "", mode: str = "mock") -> dict:
+    """普通语音识别,不做发音评估。
 
-    - 真实模式:音频字节 → ASR(free-form 发音评估),返回 {text, mode, expected, feedback}
+    - 真实模式:音频字节 → 双语 ASR,返回 {text, mode, detected}
     - mock 模式:返回预期句,便于前端链路跑通
     """
     if enabled() and audio_bytes:
-        return _real_recognize(audio_bytes)
+        return _real_transcribe(audio_bytes)
     return {
         "text": expected or "I like it.",
         "mode": mode,
@@ -72,12 +86,13 @@ def recognize(audio_bytes: bytes = None, expected: str = "", mode: str = "mock")
     }
 
 
-def _real_recognize(audio_bytes: bytes) -> dict:
-    """真实 ASR(中英自动检测)+ 英文 free-form 发音评估(在子线程跑,防止空音频卡死请求)。
+def recognize(audio_bytes: bytes = None, expected: str = "", mode: str = "mock") -> dict:
+    """Compatibility alias; new code should call transcribe()."""
+    return transcribe(audio_bytes, expected=expected, mode=mode)
 
-    - 孩子说英文:识别 + 逐词发音评估
-    - 孩子说中文:识别出中文文本,不做发音评估(feedback=None,由对话层转中文引导)
-    """
+
+def _real_transcribe(audio_bytes: bytes) -> dict:
+    """真实 ASR(中英自动检测),在子线程跑以防空音频卡死请求。"""
     if not audio_bytes or len(audio_bytes) < 500:
         # 空/极短音频直接视为没听清,不浪费一次调用
         return {"text": "", "mode": "azure", "expected": False, "feedback": None}
@@ -105,22 +120,11 @@ def _real_recognize(audio_bytes: bytes) -> dict:
                 audio_config=audio_config,
                 auto_detect_source_language_config=auto_detect,
             )
-            # free-form 发音评估:不限定参考文本,识别与逐词评分一次完成
-            # 注意:SDK 1.51 必须显式指定 grading_system/granularity,否则评估不生效(恒为 5 分)
-            pron = speechsdk.PronunciationAssessmentConfig(
-                reference_text="",
-                grading_system=speechsdk.PronunciationAssessmentGradingSystem.HundredMark,
-                granularity=speechsdk.PronunciationAssessmentGranularity.Phoneme,
-                enable_miscue=True,
-            )
-            pron.apply_to(recognizer)
-
             push.write(audio_bytes)
             push.close()
 
             result = recognizer.recognize_once()
             text = ""
-            feedback = None
             detected = ""
             if result.reason == speechsdk.ResultReason.RecognizedSpeech:
                 text = (result.text or "").strip()
@@ -128,31 +132,13 @@ def _real_recognize(audio_bytes: bytes) -> dict:
                     detected = speechsdk.AutoDetectSourceLanguageResult(result).language or ""
                 except Exception:
                     detected = ""
-                # 英文才做发音评估;中文(或语言未知)不评估
-                if text and (not detected or detected.lower().startswith("en")):
-                    try:
-                        pa = speechsdk.PronunciationAssessmentResult(result)
-                        words = []
-                        for w in pa.words or []:
-                            score = int(round(w.accuracy_score))
-                            words.append({"word": w.word, "score": score, "label": _score_label(score)})
-                        if words:
-                            feedback = {
-                                "words": words,
-                                "overall": int(round(pa.accuracy_score)),
-                                "weak": [w["word"] for w in words if w["label"] == "weak"],
-                            }
-                    except Exception:
-                        feedback = None
             result_box["ok"] = True
             result_box["text"] = text
-            result_box["feedback"] = feedback
             result_box["detected"] = detected
         except Exception as e:  # noqa: BLE001 - 语音失败不能打挂对话,降级为"没听清"
             result_box["ok"] = False
             result_box["error"] = str(e)
             result_box["text"] = ""
-            result_box["feedback"] = None
             result_box["detected"] = ""
 
     worker = threading.Thread(target=run, daemon=True)
@@ -166,36 +152,163 @@ def _real_recognize(audio_bytes: bytes) -> dict:
         "text": result_box.get("text", ""),
         "mode": "azure",
         "expected": False,
-        "feedback": result_box.get("feedback"),
+        "feedback": None,
         "detected": result_box.get("detected", ""),
         "error": result_box.get("error"),
     }
 
 
-def pronunciation(text: str) -> list:
-    """逐词发音评估。
+def assess_scripted(audio_bytes: bytes, reference_text: str) -> dict:
+    """Scripted 跟读评估;调用方必须同时提供音频和后端目标句。"""
+    reference_text = (reference_text or "").strip()
+    if not reference_text:
+        return {"score": 0, "accuracy": 0, "fluency": 0, "completeness": 0,
+                "prosody": None, "words": [], "weak_words": [], "error": "missing reference_text"}
+    if enabled() and audio_bytes:
+        return _real_assess_scripted(audio_bytes, reference_text)
 
-    真实模式需要音频才能评估;此处只拿到文本(打字输入 / mock 链路),
-    沿用 mock 逐词打分,保证 feedback 结构一致。
-    """
-    from .llm import mock_word_scores
-    return mock_word_scores(text)
+    # Mock is used only for an audio turn. Typed text never calls this function.
+    words = [
+        {"word": word.strip(".,!?"), "score": 90, "label": "good", "error_type": "None"}
+        for word in reference_text.split() if word.strip(".,!?")
+    ]
+    return {
+        "mode": "mock",
+        "reference_text": reference_text,
+        "score": 90,
+        "accuracy": 90,
+        "fluency": 90,
+        "completeness": 100,
+        "prosody": 90,
+        "words": words,
+        "weak_words": [],
+        "error": None,
+    }
+
+
+def pronunciation(audio_bytes: bytes, reference_text: str) -> dict:
+    """Compatibility alias; new code should call assess_scripted()."""
+    return assess_scripted(audio_bytes, reference_text)
+
+
+def _real_assess_scripted(audio_bytes: bytes, reference_text: str) -> dict:
+    """Fixed en-US scripted assessment with completeness and optional prosody."""
+    if not audio_bytes or len(audio_bytes) < 500:
+        return {"mode": "azure", "reference_text": reference_text, "score": 0,
+                "accuracy": 0, "fluency": 0, "completeness": 0, "prosody": None,
+                "words": [], "weak_words": [], "error": "audio too short"}
+
+    result_box = {}
+
+    def run():
+        try:
+            speech_config = speechsdk.SpeechConfig(subscription=_key(), region=_region())
+            speech_config.speech_recognition_language = "en-US"
+            push = speechsdk.audio.PushAudioInputStream()
+            audio_config = speechsdk.audio.AudioConfig(stream=push)
+            recognizer = speechsdk.SpeechRecognizer(
+                speech_config=speech_config,
+                audio_config=audio_config,
+            )
+            config = speechsdk.PronunciationAssessmentConfig(
+                reference_text=reference_text,
+                grading_system=speechsdk.PronunciationAssessmentGradingSystem.HundredMark,
+                granularity=speechsdk.PronunciationAssessmentGranularity.Phoneme,
+                enable_miscue=True,
+            )
+            try:
+                config.enable_prosody_assessment()
+            except (AttributeError, RuntimeError):
+                pass
+            config.apply_to(recognizer)
+            push.write(audio_bytes)
+            push.close()
+            result = recognizer.recognize_once()
+            if result.reason != speechsdk.ResultReason.RecognizedSpeech:
+                result_box.update({"ok": False, "error": str(result.reason)})
+                return
+
+            assessment = speechsdk.PronunciationAssessmentResult(result)
+            words = []
+            for word in assessment.words or []:
+                score = int(round(word.accuracy_score or 0))
+                raw_error = getattr(word, "error_type", None)
+                error_type = str(raw_error).split(".")[-1] if raw_error else "None"
+                label = "weak" if error_type in {"Omission", "Insertion", "Mispronunciation"} else _score_label(score)
+                words.append(
+                    {
+                        "word": word.word,
+                        "score": score,
+                        "label": label,
+                        "error_type": error_type,
+                    }
+                )
+            pronunciation_score = int(round(getattr(assessment, "pronunciation_score", 0) or 0))
+            accuracy = int(round(assessment.accuracy_score or 0))
+            fluency = int(round(assessment.fluency_score or 0))
+            completeness = int(round(assessment.completeness_score or 0))
+            raw_prosody = assessment.prosody_score
+            prosody = int(round(raw_prosody)) if raw_prosody is not None else None
+            result_box.update(
+                {
+                    "ok": True,
+                    "recognized_text": (result.text or "").strip(),
+                    "score": pronunciation_score or accuracy,
+                    "accuracy": accuracy,
+                    "fluency": fluency,
+                    "completeness": completeness,
+                    "prosody": prosody,
+                    "words": words,
+                    "weak_words": [word["word"] for word in words if word["label"] == "weak"],
+                }
+            )
+        except Exception as exc:  # noqa: BLE001 - speech failure must degrade safely
+            result_box.update({"ok": False, "error": str(exc)})
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(timeout=RECOGNIZE_TIMEOUT_S)
+    if not result_box:
+        result_box = {"ok": False, "error": "pronunciation timeout"}
+    return {
+        "mode": "azure",
+        "reference_text": reference_text,
+        "score": result_box.get("score", 0),
+        "accuracy": result_box.get("accuracy", 0),
+        "fluency": result_box.get("fluency", 0),
+        "completeness": result_box.get("completeness", 0),
+        "prosody": result_box.get("prosody"),
+        "words": result_box.get("words", []),
+        "weak_words": result_box.get("weak_words", []),
+        "recognized_text": result_box.get("recognized_text", ""),
+        "error": result_box.get("error"),
+    }
 
 
 # 可选音色(家长设置页展示)
 TTS_VOICE_OPTIONS = {
-    "en-US-JennyNeural": "Jenny 女声(温暖亲切,推荐)",
+    "en-US-AvaMultilingualNeural": "Ava 女声(自然对话,默认推荐)",
+    "en-US-EmmaMultilingualNeural": "Emma 女声(温和自然)",
     "en-US-AriaNeural": "Aria 女声(沉稳大气)",
-    "en-US-AvaMultilingualNeural": "Ava 女声(自然流畅)",
+    "en-US-JennyNeural": "Jenny 女声(温暖亲切)",
+    "en-US-Emma2:DragonHDLatestNeural": "Emma2 Dragon HD(拟真对话,需支持区域)",
     "en-US-GuyNeural": "Guy 男声(沉稳男老师)",
     "en-US-AndrewMultilingualNeural": "Andrew 男声(温和男老师)",
 }
 
 
 def tts_voice() -> str:
-    """当前老师音色(动态读 env,支持家长设置页保存后生效)。"""
-    v = (os.getenv("TTS_VOICE") or "").strip()
-    return v if v in TTS_VOICE_OPTIONS else "en-US-JennyNeural"
+    """Current English teacher voice, read dynamically from environment."""
+    v = (os.getenv("AZURE_TTS_VOICE_EN") or os.getenv("TTS_VOICE") or "").strip()
+    return v if v in TTS_VOICE_OPTIONS else "en-US-AvaMultilingualNeural"
+
+
+def tts_voice_zh() -> str:
+    return (os.getenv("AZURE_TTS_VOICE_ZH") or "zh-CN-XiaoxiaoNeural").strip()
+
+
+def _is_hd_voice(voice: str) -> bool:
+    return ":DragonHD" in (voice or "")
 
 # JennyNeural 官方支持的说话风格(微软文档 StyleList),这里只用适合孩子陪练的
 TTS_STYLES = {
@@ -283,41 +396,47 @@ def _has_chinese(text: str) -> bool:
 
 
 def tts(text: str, voice: str = "", style: str | None = None, demo: bool = False) -> dict:
-    """合成语音,带说话风格与语气调整。
+    """Synthesize a natural teacher voice with optional dedicated TTS resource.
 
     - style: 传入白名单内的风格名则强制使用;不传/无效则按文本内容自动挑选
-    - demo: 跟读示范句 → 音调提高、语速放慢,像"小朋友示范",与老师声音区分
-    - 文本含中文(如 AI 的中文引导语) → 自动切到中文语音 Xiaoxiao,中英混读
+    - demo: 跟读示范句只放慢语速,不再强行升高音调
+    - 文本含中文时使用 AZURE_TTS_VOICE_ZH 或 Xiaoxiao
+    - Dragon HD 使用自然韵律和轻量 temperature,不叠加 express-as 变调
     - 风格合成失败自动降级为无风格版本,保证朗读不中断
     - 真实模式:返回 {"mode": "azure", "audio": mp3字节, "style": 实际风格}
     - 失败/mock:返回 {"mode": "browser", "text": 原文},前端用浏览器朗读兜底
     """
-    if not (enabled() and text):
+    if not (tts_enabled() and text):
         return {"mode": "browser", "text": text}
 
     if _has_chinese(text):
-        # 中文引导:用中文语音(中英混合朗读),不套英文风格
-        voice = "zh-CN-XiaoxiaoNeural"
+        voice = tts_voice_zh()
         style = None
-        rate, pitch = "1.02", "+2%"
+        rate, pitch = "0.98", "+0%"
         demo = False
     else:
         voice = voice if voice in TTS_VOICE_OPTIONS else tts_voice()
-        style = style if style in TTS_STYLES else _pick_style(text)
-        # 语速:对话/提问自然语速;带读/示范稍慢便于模仿
+        style = None if _is_hd_voice(voice) else (style if style in TTS_STYLES else _pick_style(text))
         rate = "1.0" if style == "chat" else ("0.96" if style == "friendly" else "0.98")
         if demo:
-            rate, pitch = "0.92", "+12%"
+            rate, pitch = "0.90", "+0%"
         else:
-            pitch = "+5%"
+            pitch = "+0%"
     try:
-        speech_config = speechsdk.SpeechConfig(subscription=_key(), region=_region())
+        speech_config = speechsdk.SpeechConfig(subscription=_tts_key(), region=_tts_region())
         speech_config.set_speech_synthesis_output_format(
             speechsdk.SpeechSynthesisOutputFormat.Audio24Khz48KBitRateMonoMp3
         )
         safe = _add_breaks(_escape_xml(text))
-        # 语气层:风格 + 场景语速 + 句间停顿
-        if style:
+        # HD voices infer conversational prosody from content; keep SSML light.
+        if _is_hd_voice(voice):
+            lang = "zh-CN" if voice.lower().startswith("zh-cn") else "en-US"
+            styled = (
+                f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="{lang}">'
+                f'<voice name="{voice}" parameters="temperature=0.7">'
+                f'<prosody rate="{rate}">{safe}</prosody></voice></speak>'
+            )
+        elif style:
             styled = (
                 f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
                 f'xmlns:mstts="https://www.w3.org/2001/mstts" xml:lang="en-US">'
@@ -336,8 +455,9 @@ def tts(text: str, voice: str = "", style: str | None = None, demo: bool = False
         if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
             return {"mode": "azure", "audio": bytes(result.audio_data), "style": style or "zh", "demo": demo}
         # 风格不受支持时降级:无风格版本再试一次
+        lang = "zh-CN" if voice.lower().startswith("zh-cn") else "en-US"
         plain = (
-            f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US">'
+            f'<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="{lang}">'
             f'<voice name="{voice}"><prosody rate="{rate}" pitch="{pitch}">{safe}</prosody></voice></speak>'
         )
         result = _synthesize(speech_config, plain)

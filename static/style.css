@@ -1051,14 +1051,28 @@ input:focus-visible { box-shadow: var(--focus-ring); }
 /* ============================================================
    会话页 (stage 3)
    ============================================================ */
-.session-view { display: flex; flex-direction: column; height: 100vh; }
+.session-view {
+  height: 100vh;
+  height: 100dvh;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(320px, 27vw, 380px);
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.session-view .nav {
+  grid-column: 1 / -1;
+  grid-row: 1;
+}
 
 /* 当前环节横幅 */
 .seg-hero {
+  grid-column: 1;
+  grid-row: 2;
   display: flex;
   align-items: center;
   gap: var(--s-2);
-  padding: var(--s-3);
+  padding: var(--s-2) var(--s-3);
   background: linear-gradient(135deg, rgba(61,185,255,0.10), rgba(138,92,255,0.10));
   border-bottom: 0.5px solid var(--border);
   flex-shrink: 0;
@@ -1085,41 +1099,136 @@ input:focus-visible { box-shadow: var(--focus-ring); }
 
 /* 会话消息容器(flex 列,使 .msg.ai/.student 的 align-self 生效) */
 .session-view .content {
+  grid-column: 1;
+  grid-row: 3;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  padding-bottom: 280px;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: var(--s-3) clamp(var(--s-3), 4vw, var(--s-5)) var(--s-4);
 }
 
 .speak-stage {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  padding: var(--s-3) var(--s-3) calc(var(--s-3) + var(--safe-bottom));
-  background: rgba(255,255,255,0.92);
+  grid-column: 2;
+  grid-row: 2 / 4;
+  position: relative;
+  left: auto;
+  right: auto;
+  bottom: auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 20px var(--s-3) calc(20px + var(--safe-bottom));
+  background: rgba(255,255,255,0.88);
   backdrop-filter: saturate(180%) blur(20px);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
-  border-top: 0.5px solid var(--border);
+  border-top: none;
+  border-left: 0.5px solid var(--border-strong);
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: var(--s-2);
+  overflow-y: auto;
   z-index: 10;
 }
 
+.stage-heading {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-2);
+  padding-bottom: var(--s-2);
+  border-bottom: 0.5px solid var(--border);
+}
+
+.stage-kicker {
+  color: var(--accent);
+  font-size: var(--f-caption);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.stage-heading-title {
+  margin-top: 3px;
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.stage-shortcut {
+  flex-shrink: 0;
+  padding: 5px 9px;
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  box-shadow: var(--shadow-sm);
+}
+
+.stage-control {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.pending-task-card {
+  width: 100%;
+  padding: 14px;
+  border: 1px solid rgba(61,155,255,0.24);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, var(--accent-bg), rgba(255,255,255,0.92));
+  box-shadow: var(--shadow-sm);
+  text-align: left;
+}
+
+.pending-task-card[hidden] { display: none; }
+.pending-task-label { color: var(--accent); font-size: 13px; font-weight: 700; }
+.pending-task-target {
+  margin-top: 8px;
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+.pending-task-replay {
+  min-height: var(--tap-min);
+  margin-top: 8px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: rgba(61,155,255,0.10);
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pending-task-note { margin-top: 4px; color: var(--text-2); font-size: 12px; }
+
 .stage-mic {
   position: relative;
-  width: 120px;
-  height: 120px;
+  width: 112px;
+  height: 112px;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
 .big-mic-btn {
-  width: 120px;
-  height: 120px;
+  width: 112px;
+  height: 112px;
   border-radius: 50%;
   border: none;
   background: var(--accent-grad);
@@ -1138,7 +1247,7 @@ input:focus-visible { box-shadow: var(--focus-ring); }
 .big-mic-btn:active { transform: scale(0.94); }
 .big-mic-btn:focus-visible { box-shadow: var(--focus-ring), var(--shadow-accent); }
 
-.big-mic-icon { font-size: 56px; line-height: 1; }
+.big-mic-icon { font-size: 50px; line-height: 1; }
 
 .stage-pulse {
   position: absolute;
@@ -1182,11 +1291,92 @@ input:focus-visible { box-shadow: var(--focus-ring); }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.stage-text { font-size: 19px; font-weight: 700; letter-spacing: -0.3px; color: var(--text); }
-.stage-tip { font-size: var(--f-caption); color: var(--text-2); text-align: center; }
-.stage-actions { display: flex; gap: var(--s-1); }
-.speak-stage[data-stage="idle"] .stage-actions { display: none; }
+.stage-text { font-size: 20px; font-weight: 700; letter-spacing: -0.3px; color: var(--text); }
+.stage-tip {
+  max-width: 300px;
+  font-size: var(--f-caption);
+  color: var(--text-2);
+  line-height: 1.55;
+  text-align: center;
+}
+.stage-actions { display: flex; width: 100%; gap: var(--s-1); }
+.stage-actions > button {
+  flex: 1;
+  min-width: 0;
+  min-height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.stage-actions #typeBtn {
+  background: var(--accent-bg);
+  font-weight: 600;
+}
+.stage-actions #endBtn {
+  background: transparent;
+  color: var(--weak);
+  border: 1px solid rgba(229,72,77,0.28);
+  box-shadow: none;
+}
+.speak-stage[data-stage="idle"] .stage-actions { display: flex; }
 .speak-stage[data-stage="done"] .stage-actions { display: none; }
+
+.session-view #typeBar {
+  width: 100%;
+  padding: 12px;
+  gap: var(--s-1);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.session-view #typeBar input { flex: 1; min-width: 0; }
+.session-view #typeSend { min-height: var(--tap-min); padding: 8px 16px; font-size: 16px; }
+
+body.learn-mode .session-view .big-mic-btn,
+body.learn-mode .session-view .stage-mic {
+  width: 112px;
+  height: 112px;
+}
+
+body.learn-mode .session-view #typeSend {
+  padding: 8px 16px;
+  font-size: 16px;
+}
+
+/* iPad 横屏与中等宽度 PC:保留双栏,压缩右侧面板和控件占用 */
+@media (min-width: 821px) and (max-width: 1180px) and (orientation: landscape) {
+  .session-view { grid-template-columns: minmax(0, 1fr) clamp(286px, 32vw, 328px); }
+  .session-view .content { padding: 20px; }
+  .seg-hero { padding: 14px 20px; }
+  .seg-hero .seg-icon { width: 44px; height: 44px; border-radius: 14px; font-size: 22px; }
+  .speak-stage { padding: var(--s-2) 18px calc(var(--s-2) + var(--safe-bottom)); gap: 12px; }
+  .stage-heading { padding-bottom: 12px; }
+  .stage-heading-title { font-size: 13px; }
+  .stage-control { gap: 10px; }
+  .pending-task-card { padding: 12px; }
+  .pending-task-target { font-size: 16px; }
+  .stage-mic,
+  .big-mic-btn,
+  body.learn-mode .session-view .big-mic-btn,
+  body.learn-mode .session-view .stage-mic { width: 96px; height: 96px; }
+  .big-mic-icon { font-size: 44px; }
+  .stage-text { font-size: 18px; }
+  .stage-tip { max-width: 270px; font-size: 13px; }
+}
+
+/* 低高度桌面/横屏:优先保证聊天区与操作区都无需页面级滚动 */
+@media (min-width: 821px) and (max-height: 720px) {
+  .stage-mic,
+  .big-mic-btn,
+  body.learn-mode .session-view .big-mic-btn,
+  body.learn-mode .session-view .stage-mic { width: 88px; height: 88px; }
+  .big-mic-icon { font-size: 40px; }
+  .stage-control { gap: 8px; }
+  .stage-tip { line-height: 1.4; }
+}
 
 /* AI 气泡翻译 */
 .bubble-translate {
@@ -1276,6 +1466,38 @@ input:focus-visible { box-shadow: var(--focus-ring); }
 .grade-card .grade-label { font-size: var(--f-caption); color: var(--text-2); }
 .grade-card .grade-name { font-size: 18px; font-weight: 700; letter-spacing: -0.3px; margin-top: 2px; }
 .grade-card .grade-reason { font-size: 14px; color: var(--text-2); }
+
+/* 跟读发音卡:只在 repeat + audio 回合出现,与任务评级分离 */
+.pronunciation-card {
+  align-self: center;
+  width: 100%;
+  max-width: 480px;
+  padding: var(--s-3);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  border-radius: var(--radius-xl);
+  background: linear-gradient(135deg, var(--accent-bg), var(--surface));
+  box-shadow: var(--shadow-sm);
+  animation: fadeIn 0.35s var(--ease);
+}
+
+.pronunciation-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  font-weight: 700;
+}
+
+.pronunciation-main strong { font-size: 28px; color: var(--accent); }
+.pronunciation-cheer { margin-top: 8px; color: var(--text-2); font-size: 14px; }
+.pronunciation-metrics { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 8px; color: var(--text-2); font-size: 13px; }
+.pronunciation-weak { margin-top: 8px; color: var(--weak); font-size: 14px; font-weight: 600; }
+
+.parent-pron-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--s-2); }
+.parent-pron-card { padding: var(--s-2); }
+.parent-pron-card > div:first-child { display: flex; justify-content: space-between; gap: var(--s-2); }
+.parent-pron-card > div:first-child span { color: var(--accent); font-weight: 700; }
+.parent-pron-metrics { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; color: var(--text-2); font-size: 13px; }
 
 /* ============================================================
    PIN 锁定倒计时环

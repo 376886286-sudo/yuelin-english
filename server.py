@@ -10,13 +10,14 @@ import json
 import os
 import time
 import uuid
+from copy import deepcopy
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from app import azure_speech, llm, storage
+from app import azure_speech, dialogue_manager, lesson_contract, llm, storage
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
@@ -39,6 +40,12 @@ _load_env()
 
 app = FastAPI(title="英语口语陪练", version="0.1.0")
 
+# Active learning state is owned by the server.  The browser sends only an id;
+# any legacy session object in a request is used solely to read that id.
+ACTIVE_SESSIONS: dict[str, dict] = {}
+_AUDIO_CACHE: dict[str, dict] = {}
+_AUDIO_TTL_SECONDS = 120
+
 
 def _config() -> dict:
     try:
@@ -59,6 +66,7 @@ def api_status():
         "ok": True,
         "student": _config().get("student", {}),
         "deepseek": "mock" if not llm.enabled() else "live",
+        "deepseek_model": llm.model_name(),
         "azure": azure_speech.status(),
         "courses": len(storage.list_courses()),
         "sessions": len(storage.list_sessions()),
@@ -91,8 +99,9 @@ async def lesson_upload(file: UploadFile = File(...)):
 def lesson_confirm(payload: dict):
     """确认预览教案入库为课程。"""
     lesson = payload.get("lesson", {})
-    if not lesson.get("title_zh") or not lesson.get("segments"):
-        return JSONResponse({"ok": False, "error": "教案缺少标题或环节,请重新上传"}, status_code=400)
+    errors = lesson_contract.validate_for_import(lesson)
+    if errors:
+        return JSONResponse({"ok": False, "error": "教案校验失败:" + "; ".join(errors[:12])}, status_code=400)
     course = storage.save_course(lesson)
     return {"ok": True, "course": course}
 
@@ -126,39 +135,61 @@ def chat_session(payload: dict):
     if not course:
         return JSONResponse({"ok": False, "error": "课程不存在"}, status_code=404)
     ctx = _course_ctx(course)
-    session = {
-        "id": uuid.uuid4().hex[:10],
-        "course_id": course["id"],
-        "started": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "segment_idx": 0,
-        "exchanges": [],
-        "grades": {"segments": {}, "weak": []},
-        "done": False,
-        "has_review": bool(ctx.get("review_errors")),
-    }
+    session_id = uuid.uuid4().hex[:10]
+    session, opening = dialogue_manager.new_session(
+        ctx,
+        session_id,
+        time.strftime("%Y-%m-%d %H:%M:%S"),
+    )
+    session["has_review"] = bool(ctx.get("review_errors"))
+    session["_lesson"] = deepcopy(ctx)
+    ACTIVE_SESSIONS[session_id] = session
+    pending = session.get("pending") or {}
+    segment_idx = pending.get("segment_idx", 0)
     return {
         "ok": True,
-        "session": session,
-        "ai_message": llm.teacher_first_message(ctx),
-        "segment": ctx["segments"][0] if ctx.get("segments") else {},
+        "session": dialogue_manager.public_session(session),
+        "ai_message": opening,
+        "segment": ctx["segments"][segment_idx] if 0 <= segment_idx < len(ctx.get("segments", [])) else {"code": "REVIEW", "name_zh": "往期易错点"},
         "review_count": len(ctx.get("review_errors", [])),
     }
 
 
-@app.post("/api/recognize")
-async def recognize(audio: UploadFile | None = File(None), expected: str = Form("")):
-    """识别孩子音频。
+def _active_session_id(payload: dict) -> str:
+    legacy = payload.get("session") if isinstance(payload.get("session"), dict) else {}
+    return str(payload.get("session_id") or legacy.get("id") or "").strip()
 
-    - 真实模式:Azure 识别 + free-form 发音评估,返回 {text, feedback}
-    - mock 模式:直接返回预期句
+
+def _cache_audio(raw: bytes, session_id: str) -> str:
+    now = time.time()
+    for key, item in list(_AUDIO_CACHE.items()):
+        if now - item.get("created", 0) > _AUDIO_TTL_SECONDS:
+            _AUDIO_CACHE.pop(key, None)
+    while len(_AUDIO_CACHE) >= 20:
+        oldest = min(_AUDIO_CACHE, key=lambda key: _AUDIO_CACHE[key].get("created", 0))
+        _AUDIO_CACHE.pop(oldest, None)
+    audio_id = uuid.uuid4().hex[:12]
+    _AUDIO_CACHE[audio_id] = {"raw": raw, "created": now, "session_id": session_id}
+    return audio_id
+
+
+@app.post("/api/recognize")
+async def recognize(audio: UploadFile | None = File(None), session_id: str = Form(""), expected: str = Form("")):
+    """First pass: bilingual speech-to-text only. Audio is cached briefly.
+
+    If the subsequent turn analysis confirms a repeat action, /api/chat/reply
+    reuses the cached bytes for a second, scripted pronunciation assessment.
     """
     raw = await audio.read() if audio else b""
-    result = azure_speech.recognize(raw, expected=expected)
+    session = ACTIVE_SESSIONS.get(session_id)
+    server_expected = ((session or {}).get("pending") or {}).get("target_text", "")
+    result = azure_speech.transcribe(raw, expected=server_expected or expected)
+    audio_id = _cache_audio(raw, session_id) if raw else None
     if raw:
-        storage.add_usage(stt_seconds=max(3, len(raw) / 32000), pron_seconds=max(3, len(raw) / 32000))
+        storage.add_usage(stt_seconds=max(3, len(raw) / 32000))
     else:
-        storage.add_usage(stt_seconds=max(3, len(expected.split()) * 2))
-    return {"ok": True, **result}
+        storage.add_usage(stt_seconds=max(3, len((server_expected or expected).split()) * 2))
+    return {"ok": True, **result, "audio_id": audio_id}
 
 
 @app.post("/api/tts")
@@ -166,7 +197,7 @@ def tts(payload: dict):
     """AI 文本合成语音(带说话风格)。真实模式返回 mp3;失败/mock 返回 browser 标记由前端兜底。
 
     可选传 style(friendly/cheerful/hopeful/chat/excited/assistant)、voice(音色白名单)、
-    demo(跟读示范句变调);style/voice 不传则后端自动处理。
+    demo(跟读示范句自然降速);style/voice 不传则后端自动处理。
     """
     text = (payload.get("text") or "").strip()
     if not text:
@@ -185,101 +216,152 @@ def tts(payload: dict):
     return {"ok": True, "mode": "browser", "text": text}
 
 
-def _mock_grade(feedback: dict) -> str:
-    """按发音评估结果给环节评级:A 独立 / B 提示 / C 示范 / D 未完成(mock)。"""
-    overall = feedback.get("overall", 0)
-    weak_count = len(feedback.get("weak", []))
-    if overall >= 88 and weak_count == 0:
-        return "A"
-    if overall >= 78:
-        return "B"
-    if overall >= 65:
-        return "C"
-    return "D"
+def _process_turn(session_id: str, student_text: str, input_mode: str, audio_bytes: bytes | None = None):
+    """One server-owned turn: understand, optionally assess, then transition."""
+    session = ACTIVE_SESSIONS.get(session_id)
+    if not session:
+        return JSONResponse({"ok": False, "error": "会话不存在或已过期,请重新开始"}, status_code=404)
+    student_text = str(student_text or "").strip()
+    if not student_text:
+        return JSONResponse({"ok": False, "error": "没有识别到内容,请再说一次"}, status_code=400)
+    lesson = session.get("_lesson") or _course_ctx(storage.get_course(session.get("course_id", "")) or {})
+    analysis = dialogue_manager.analyze(session, student_text)
+    input_mode = input_mode if input_mode in {"audio", "typed"} else "typed"
+    pronunciation = None
+    pending = session.get("pending") or {}
+    completed_segment_name = pending.get("segment_name", "")
+    expected_action = pending.get("expected_action") or pending.get("expected_mode") or "open_answer"
+    intent = analysis.get("intent") or analysis.get("user_act")
+    reference_text = pending.get("reference_text") or pending.get("target_text", "")
+
+    # This is the only pronunciation trigger in the application.
+    if (
+        expected_action == "repeat"
+        and intent in {"repeat_attempt", "repeat"}
+        and input_mode == "audio"
+        and audio_bytes
+        and reference_text
+    ):
+        pronunciation = azure_speech.assess_scripted(audio_bytes, reference_text)
+        storage.add_usage(pron_seconds=max(3, len(audio_bytes) / 32000))
+        if pronunciation.get("error"):
+            analysis = {**analysis, "speech_degraded": True}
+    try:
+        result = dialogue_manager.apply_turn(
+            session,
+            lesson,
+            student_text,
+            analysis,
+            input_mode=input_mode,
+            pronunciation=pronunciation,
+        )
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    grade = result.get("segment_grade")
+    return {
+        "ok": True,
+        "student_text": student_text,
+        **result,
+        # Temporary compatibility fields for older front-end clients.
+        "feedback": result.get("pronunciation"),
+        "grade": grade,
+        "segment_name": completed_segment_name if grade else (session.get("pending") or {}).get("segment_name", ""),
+        "encouragement": _encouragement(grade) if grade else None,
+        "guide_zh": False,
+    }
+
+
+@app.post("/api/turn/text")
+def turn_text(payload: dict):
+    """Unified typed turn. Typed input can never produce pronunciation data."""
+    return _process_turn(
+        _active_session_id(payload),
+        str(payload.get("text") or ""),
+        "typed",
+        audio_bytes=None,
+    )
+
+
+@app.post("/api/turn/audio")
+async def turn_audio(audio: UploadFile | None = File(None), session_id: str = Form("")):
+    """Unified audio turn: bilingual STT → intent → optional scripted assessment."""
+    raw = await audio.read() if audio else b""
+    if not raw:
+        return JSONResponse({"ok": False, "error": "缺少录音,请重新录制"}, status_code=400)
+    session = ACTIVE_SESSIONS.get(session_id)
+    if not session:
+        return JSONResponse({"ok": False, "error": "会话不存在或已过期,请重新开始"}, status_code=404)
+    pending = session.get("pending") or {}
+    expected_action = pending.get("expected_action") or pending.get("expected_mode") or "open_answer"
+    # Only scripted repeat tasks may bias recognition toward a reference sentence.
+    # Open conversation must remain genuinely open instead of being pulled toward
+    # the authored sample answer by Azure's phrase hints.
+    expected = (pending.get("reference_text") or pending.get("target_text", "")) if expected_action == "repeat" else ""
+    transcription = azure_speech.transcribe(raw, expected=expected)
+    storage.add_usage(stt_seconds=max(3, len(raw) / 32000))
+    text = (transcription.get("text") or "").strip()
+    if not text:
+        return JSONResponse(
+            {"ok": False, "error": transcription.get("error") or "没有听清,请再说一次"},
+            status_code=422,
+        )
+    result = _process_turn(session_id, text, "audio", audio_bytes=raw)
+    if isinstance(result, JSONResponse):
+        return result
+    return {
+        **result,
+        "transcription": {
+            "text": text,
+            "language": transcription.get("detected", ""),
+            "mode": transcription.get("mode", "mock"),
+        },
+    }
 
 
 @app.post("/api/chat/reply")
 def chat_reply(payload: dict):
-    """孩子说话后:发音评估 + AI 回应。
-
-    - 语音链路:前端把 /api/recognize 的真实逐词评估(words)传上来,直接使用
-    - 打字链路:无音频,用 mock 逐词打分兜底,结构一致
-    """
-    session = payload.get("session", {})
-    student_text = (payload.get("text") or "").strip()
-    course = storage.get_course(session.get("course_id", ""))
-    if not course:
-        return JSONResponse({"ok": False, "error": "课程不存在"}, status_code=404)
-    ctx = _course_ctx(course)
-
-    total = len(course.get("segments", []))
-    segment_idx = session.get("segment_idx", 0)
-    seg_key = course["segments"][segment_idx]["code"] if segment_idx < total else "REVIEW"
-
-    words = payload.get("words") or ([] if llm._has_chinese(student_text) else azure_speech.pronunciation(student_text))
-    feedback = {
-        "words": words,
-        "overall": round(sum(w["score"] for w in words) / len(words)) if words else 0,
-        "weak": [w["word"] for w in words if w["label"] == "weak"],
-    }
-
-    ai = llm.teacher_reply(ctx, segment_idx, student_text, session.get("exchanges", []))
-    new_segment_idx = segment_idx + 1 if ai.get("next_segment") else segment_idx
-    guide_zh = bool(ai.get("guide_zh"))
-    # 中文引导回合:不评级、不占环节进度
-    grade = None if guide_zh else _mock_grade(feedback)
-
-    session["exchanges"].append({"role": "ai", "text": ai["text"]})
-    # 中文引导回合不计入环节完成进度(孩子仍需说英文目标句)
-    stu_seg_idx = -1 if guide_zh else segment_idx
-    session["exchanges"].append({
-        "role": "student", "text": student_text, "feedback": feedback,
-        "segment_idx": stu_seg_idx,
-    })
-    session["segment_idx"] = new_segment_idx
-    if grade is not None:
-        session["grades"]["segments"][seg_key] = grade
-    session["done"] = bool(ai.get("done"))
-    seg_name = ""
-    if segment_idx < total:
-        seg_name = course["segments"][segment_idx].get("name_zh", "") or course["segments"][segment_idx].get("code", "")
-    elif ai.get("review_start"):
-        seg_name = "往期易错点"
-    return {
-        "ok": True,
-        "session": session,
-        "ai_message": ai,
-        "feedback": feedback,
-        "grade": grade,
-        "segment_name": seg_name,
-        "encouragement": None if guide_zh else _encouragement(grade),
-        "guide_zh": guide_zh,
-    }
+    """Compatibility endpoint for clients using recognize → reply."""
+    session_id = _active_session_id(payload)
+    input_mode = payload.get("input_mode") if payload.get("input_mode") in {"audio", "typed"} else ("audio" if payload.get("audio_id") else "typed")
+    cached = _AUDIO_CACHE.pop(payload.get("audio_id", ""), None) if input_mode == "audio" else None
+    raw = cached.get("raw") if cached and cached.get("session_id") == session_id else None
+    return _process_turn(session_id, str(payload.get("text") or ""), input_mode, audio_bytes=raw)
 
 
 def _encouragement(grade: str) -> str:
-    """按评级给鼓励文案(孩子优先,绝不批评)。"""
+    """按任务完成支持等级鼓励,不把 A/B/C/D 说成发音分。"""
     return {
-        "A": "🌟 完美!发音清晰又准确",
-        "B": "👍 很棒!继续保持",
-        "C": "💪 不错,再练一次会更好",
-        "D": "🌱 没关系,多说就熟悉了",
+        "A": "🌟 这一段独立完成啦!",
+        "B": "👍 用一点提示就完成了!",
+        "C": "💪 跟着示范完成了,很棒!",
+        "D": "🌱 先放一放也没关系,下次再来!",
     }.get(grade, "👍 收到!")
 
 
 @app.post("/api/summary")
 def summary(payload: dict):
     """结束会话:生成跟读记录并入库。"""
-    session = payload.get("session", {})
+    session_id = _active_session_id(payload)
+    session = ACTIVE_SESSIONS.get(session_id)
+    if not session:
+        return JSONResponse({"ok": False, "error": "会话不存在或已过期"}, status_code=404)
     course = storage.get_course(session.get("course_id", ""))
     if not course:
         return JSONResponse({"ok": False, "error": "课程不存在"}, status_code=404)
-    record = llm.generate_record(course, session.get("exchanges", []), session.get("grades", {}))
+    record = llm.generate_record(
+        course,
+        session.get("history", []),
+        session.get("grades", {}),
+        session.get("activity_results", {}),
+        session.get("coaching_notes", []),
+    )
     record["id"] = uuid.uuid4().hex[:10]
     record["date"] = time.strftime("%Y-%m-%d %H:%M")
     record["duration_min"] = payload.get("duration_min", 0)
+    record["degraded_count"] = session.get("degraded_count", 0)
     session["grades"].setdefault("weak", record["summary"]["error_points"][:2])
-    storage.save_session({"id": record["id"], **record, "raw": session})
+    storage.save_session({"id": record["id"], **record, "raw": dialogue_manager.public_session(session)})
+    ACTIVE_SESSIONS.pop(session_id, None)
     return {"ok": True, "record": record}
 
 
@@ -349,8 +431,11 @@ def api_config():
         "student": _config().get("student", {}),
         "mock": not (llm.enabled() or azure_speech.enabled()),
         "deepseek": llm.enabled(),
+        "deepseek_model": llm.model_name(),
         "azure": azure_speech.enabled(),
         "tts_voice": azure_speech.tts_voice(),
+        "tts_voice_zh": azure_speech.tts_voice_zh(),
+        "tts_region": azure_speech.status().get("tts_region"),
         "tts_voice_options": azure_speech.TTS_VOICE_OPTIONS,
     }
 
@@ -371,6 +456,8 @@ def save_keys(payload: dict):
     env["AZURE_SPEECH_REGION"] = payload.get("azure_region", env.get("AZURE_SPEECH_REGION", "eastasia"))
     voice = payload.get("tts_voice", "")
     if voice in azure_speech.TTS_VOICE_OPTIONS:
+        env["AZURE_TTS_VOICE_EN"] = voice
+        # Keep the old variable in sync for older local deployments.
         env["TTS_VOICE"] = voice
     for k, v in env.items():
         lines.append(f"{k}={v}")
