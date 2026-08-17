@@ -41,6 +41,11 @@ The lesson project may be stored anywhere and may have its own tools and
 history. The website does not import it. A lesson enters this repository only
 through upload/validation of a `schema_version: "2.0"` JSON artifact.
 
+The learning library owns canonical learning content across subjects. This
+website owns only the English speaking application and runtime copies of
+imported lessons. See `docs/project-boundary.md` for the two-system ownership
+and handoff workflow.
+
 ## Compatibility
 
 - Preferred: lesson-v2 JSON with explicit tasks/actions.
